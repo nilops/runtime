@@ -41,21 +41,27 @@ type Proxy struct {
 
 	egressTOS network.EgressTOS
 
+	// defaultDenyEgress mirrors network.Config.SandboxDefaultDenyEgress: the
+	// isEgressAllowed fallback flips from allow to deny when the node runs
+	// the default-deny posture.
+	defaultDenyEgress bool
+
 	proxyRules []proxyRule
 	proxy      *tcpproxy.Proxy
 }
 
 func New(logger logger.Logger, networkConfig network.Config, sandboxes *sandbox.Map, meterProvider metric.MeterProvider, featureFlags *featureflags.Client) *Proxy {
 	p := &Proxy{
-		httpPort:     networkConfig.SandboxTCPFirewallHTTPPort,
-		tlsPort:      networkConfig.SandboxTCPFirewallTLSPort,
-		otherPort:    networkConfig.SandboxTCPFirewallOtherPort,
-		egressTOS:    networkConfig.EgressTOS(),
-		logger:       logger,
-		sandboxes:    sandboxes,
-		metrics:      NewMetrics(meterProvider),
-		limiter:      connlimit.NewConnectionLimiter(),
-		featureFlags: featureFlags,
+		httpPort:          networkConfig.SandboxTCPFirewallHTTPPort,
+		tlsPort:           networkConfig.SandboxTCPFirewallTLSPort,
+		otherPort:         networkConfig.SandboxTCPFirewallOtherPort,
+		egressTOS:         networkConfig.EgressTOS(),
+		defaultDenyEgress: networkConfig.SandboxDefaultDenyEgress,
+		logger:            logger,
+		sandboxes:         sandboxes,
+		metrics:           NewMetrics(meterProvider),
+		limiter:           connlimit.NewConnectionLimiter(),
+		featureFlags:      featureFlags,
 	}
 
 	p.proxyRules = []proxyRule{
@@ -107,12 +113,13 @@ func (p *Proxy) Start(ctx context.Context) error {
 	otherAddr := fmt.Sprintf("0.0.0.0:%d", p.otherPort)
 
 	deps := proxyDeps{
-		metrics:      p.metrics,
-		limiter:      p.limiter,
-		logger:       p.logger,
-		sandboxes:    p.sandboxes,
-		featureFlags: p.featureFlags,
-		egressTOS:    p.egressTOS,
+		metrics:           p.metrics,
+		limiter:           p.limiter,
+		logger:            p.logger,
+		sandboxes:         p.sandboxes,
+		featureFlags:      p.featureFlags,
+		egressTOS:         p.egressTOS,
+		defaultDenyEgress: p.defaultDenyEgress,
 	}
 
 	// HTTP listener (port 80 traffic): inspect Host header for domain allowlist
@@ -224,6 +231,10 @@ type egressConn struct {
 	tos     int
 	logger  logger.Logger
 	metrics *Metrics
+	// defaultDeny is the node's default-deny egress posture, resolved per
+	// connection from the proxy deps: the isEgressAllowed fallback denies
+	// when it is set.
+	defaultDeny bool
 }
 
 // upstreamAddr is the destination as a dial target.
@@ -244,6 +255,10 @@ type proxyDeps struct {
 	sandboxes    *sandbox.Map
 	featureFlags *featureflags.Client
 	egressTOS    network.EgressTOS
+
+	// defaultDenyEgress is the node's default-deny posture, plumbed to
+	// isEgressAllowed so its fallback denies.
+	defaultDenyEgress bool
 }
 
 var _ tcpproxy.Target = (*connectionHandler)(nil)
@@ -331,5 +346,7 @@ func (t *connectionHandler) HandleConn(conn net.Conn) {
 		tos:      t.deps.egressTOS.For(sbx.Runtime.SandboxType.EgressClass()),
 		logger:   sbxLogger,
 		metrics:  t.deps.metrics,
+
+		defaultDeny: t.deps.defaultDenyEgress,
 	})
 }

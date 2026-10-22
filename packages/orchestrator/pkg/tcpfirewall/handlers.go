@@ -58,7 +58,7 @@ func domainHandler(ctx context.Context, c egressConn) {
 		hostname = tc.HostName
 	}
 
-	allowed, matchType, err := isEgressAllowed(c.sbx, hostname, c.dstIP)
+	allowed, matchType, err := isEgressAllowed(c.sbx, hostname, c.dstIP, c.defaultDeny)
 	if err != nil {
 		c.logger.Error(ctx, "Egress check failed", zap.Error(err))
 		c.metrics.RecordError(ctx, ErrorTypeEgressCheck, c.protocol)
@@ -94,7 +94,7 @@ func domainHandler(ctx context.Context, c egressConn) {
 // cidrOnlyHandler handles connections without hostname information.
 func cidrOnlyHandler(ctx context.Context, c egressConn) {
 	// No hostname available for CIDR-only handler
-	allowed, matchType, err := isEgressAllowed(c.sbx, noHostnameValue, c.dstIP)
+	allowed, matchType, err := isEgressAllowed(c.sbx, noHostnameValue, c.dstIP, c.defaultDeny)
 	if err != nil {
 		c.logger.Error(ctx, "Egress check failed", zap.Error(err))
 		c.metrics.RecordError(ctx, ErrorTypeEgressCheck, c.protocol)
@@ -178,10 +178,15 @@ func proxyWithDial(ctx context.Context, c egressConn, upstreamAddr string, dial 
 // Priority order:
 //  1. Allow domain / Allow CIDR (if either matches → allow)
 //  2. Deny domain / Deny CIDR (if either matches → deny)
-//  3. Default: allow
-func isEgressAllowed(sbx *sandbox.Sandbox, hostname string, ip net.IP) (bool, MatchType, error) {
+//  3. Default: allow, or deny under the node's default-deny posture
+func isEgressAllowed(sbx *sandbox.Sandbox, hostname string, ip net.IP, defaultDenyEgress bool) (bool, MatchType, error) {
 	egress := sbx.Config.GetNetworkEgress()
 	if egress == nil {
+		if defaultDenyEgress {
+			// No egress configuration under the default-deny posture: deny.
+			return false, MatchTypeNone, nil
+		}
+
 		// No egress configuration, allow all traffic.
 		return true, MatchTypeNone, nil
 	}
@@ -219,7 +224,12 @@ func isEgressAllowed(sbx *sandbox.Sandbox, hostname string, ip net.IP) (bool, Ma
 		}
 	}
 
-	// Default: allow all traffic.
+	// Default: allow all traffic, or deny under the default-deny posture —
+	// under it, only the explicit allow rules above open a path.
+	if defaultDenyEgress {
+		return false, MatchTypeNone, nil
+	}
+
 	return true, MatchTypeNone, nil
 }
 

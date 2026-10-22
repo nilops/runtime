@@ -100,6 +100,15 @@ type Config struct {
 
 	// NetworkVersion selects v1 (iptables per-sandbox) or v2 (nftables, host sets).
 	NetworkVersion int `env:"NETWORK_VERSION" envDefault:"1"`
+
+	// SandboxDefaultDenyEgress inverts the node's egress posture: non-TCP
+	// packets no allow rule accepted are dropped instead of accepted, and the
+	// userspace TCP egress proxy falls back to deny. The predefined allow set
+	// (the orchestrator's in-sandbox control IP: hyperloop, NFS proxy,
+	// portmapper) and ESTABLISHED/RELATED replies always pass. Meant for
+	// dedicated pentest node pools; template builds need it off (or scoped
+	// per sandbox) because builds egress freely.
+	SandboxDefaultDenyEgress bool `env:"SANDBOX_DEFAULT_DENY_EGRESS" envDefault:"false"`
 }
 
 const maxDSCP = 63 // DSCP is the top 6 bits of the IPv4 TOS / IPv6 traffic-class byte.

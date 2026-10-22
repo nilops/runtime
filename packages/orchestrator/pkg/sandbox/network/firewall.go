@@ -38,6 +38,11 @@ const (
 	postureRules    = "rules"
 	postureBYOP     = "byop"
 	postureIsolated = "isolated"
+	// postureDefaultDeny is the NilOps default-deny egress posture: the
+	// trailing non-TCP rule drops instead of accepting, and the TCP egress
+	// proxy falls back to deny. Installed only when the node sets
+	// SANDBOX_DEFAULT_DENY_EGRESS.
+	postureDefaultDeny = "default-deny"
 )
 
 // NonDNSUDPMode selects what the filter chain does with guest UDP datagrams
@@ -713,6 +718,15 @@ func notInSet(ipSet *nftables.Set) *expr.Lookup {
 // all protocols. The non-DNS UDP rule counts on counter. Buffer-only; the
 // caller must Flush.
 func (fw *Firewall) installRules(byop bool, nonDNSUDPMode NonDNSUDPMode, counter *nftables.CounterObj) {
+	fw.installRulesWithPosture(byop, nonDNSUDPMode, counter, false)
+}
+
+// installRulesWithPosture is installRules with the default-deny posture: when
+// denyDefault is true a trailing rule drops every non-TCP packet the earlier
+// rules did not accept, instead of leaving the default policy to accept it.
+// TCP is never dropped here (the host-netns REDIRECT carries it to the
+// userspace egress proxy, whose own fallback flips with the same posture).
+func (fw *Firewall) installRulesWithPosture(byop bool, nonDNSUDPMode NonDNSUDPMode, counter *nftables.CounterObj, denyDefault bool) {
 	// FILTER CHAIN (PREROUTING, priority -150)
 	//   0. EgressProxy.HeadFilterRules, if any
 	//   0. IPv4 UDP to a port other than 53, destination in neither allow set → named counter, DROP in drop mode (absent in off mode)
@@ -721,7 +735,8 @@ func (fw *Firewall) installRules(byop bool, nonDNSUDPMode NonDNSUDPMode, counter
 	//   3. predefinedDenySet → DROP (all protocols, or non-TCP only when byop)
 	//   4. Non-TCP: userAllowSet → accept
 	//   5. Non-TCP: userDenySet → DROP
-	//   6. Default: ACCEPT (TCP handled by iptables REDIRECT in host netns)
+	//   6. Default: ACCEPT (TCP handled by iptables REDIRECT in host netns),
+	//      or under denyDefault: non-TCP → DROP and TCP left to the proxy
 
 	// Rule 0: the egress proxy's head rules, ahead of every rule of the
 	// firewall's own.
@@ -753,9 +768,34 @@ func (fw *Firewall) installRules(byop bool, nonDNSUDPMode NonDNSUDPMode, counter
 	// Only non-TCP traffic is affected; TCP goes to proxy
 	fw.addNonTCPSetFilterRule(fw.userDenySet.Set(), true)
 
-	// Default policy: ACCEPT
-	// - Non-TCP not in user sets: allowed (default policy)
-	// - TCP: iptables REDIRECT handles TCP traffic to proxy
+	// Rule 6 (default-deny posture only): non-TCP → DROP.
+	// Everything the earlier rules did not accept is dropped; TCP still
+	// reaches the userspace proxy via the host-netns REDIRECT.
+	if denyDefault {
+		fw.addNonTCPDefaultDropRule()
+	}
+}
+
+// addNonTCPDefaultDropRule buffers a rule that drops every non-TCP packet from
+// the tap interface, regardless of destination — the default-deny posture's
+// trailing rule. It must stay below the ESTABLISHED and predefined-allow rules
+// so the control plane and reply traffic keep flowing. Buffer-only; the caller
+// flushes.
+func (fw *Firewall) addNonTCPDefaultDropRule() {
+	fw.conn.AddRule(&nftables.Rule{
+		Table: fw.table,
+		Chain: fw.filterChain,
+		Exprs: append(fw.tapIfaceMatch(),
+			// Match non-TCP protocol (protocol != TCP)
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{
+				Op:       expr.CmpOpNeq,
+				Register: 1,
+				Data:     []byte{unix.IPPROTO_TCP},
+			},
+			&expr.Verdict{Kind: expr.VerdictDrop},
+		),
+	})
 }
 
 // bufferUserRules buffers a full replacement of every firewall set.
@@ -799,6 +839,22 @@ func (fw *Firewall) bufferUserRules(allowedCIDRs, deniedCIDRs []string) error {
 // On any failure the conn is replaced via resetConn, so a poisoned batch can
 // never leak into a later flush.
 func (fw *Firewall) ApplyRules(ctx context.Context, byop bool, nonDNSUDPMode NonDNSUDPMode, allowedCIDRs, deniedCIDRs []string) (err error) {
+	return fw.applyRulesWithPosture(ctx, byop, nonDNSUDPMode, allowedCIDRs, deniedCIDRs, false)
+}
+
+// ApplyDefaultDenyRules is ApplyRules in the NilOps default-deny posture: a
+// trailing rule drops every non-TCP packet the allow rules did not accept
+// (the userspace TCP proxy enforces the same fallback on its side), while the
+// predefined allow set — the orchestrator's in-sandbox control IP, which
+// fronts hyperloop, the NFS proxy and the portmapper — and
+// ESTABLISHED/RELATED replies keep flowing, so /init, health and the
+// pause/resume cycle survive the posture. Unlike DenyEgress it is a
+// posture for long-lived sandboxes, not a throwaway's total isolation.
+func (fw *Firewall) ApplyDefaultDenyRules(ctx context.Context, byop bool, nonDNSUDPMode NonDNSUDPMode, allowedCIDRs, deniedCIDRs []string) (err error) {
+	return fw.applyRulesWithPosture(ctx, byop, nonDNSUDPMode, allowedCIDRs, deniedCIDRs, true)
+}
+
+func (fw *Firewall) applyRulesWithPosture(ctx context.Context, byop bool, nonDNSUDPMode NonDNSUDPMode, allowedCIDRs, deniedCIDRs []string, denyDefault bool) (err error) {
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 
@@ -812,10 +868,14 @@ func (fw *Firewall) ApplyRules(ctx context.Context, byop bool, nonDNSUDPMode Non
 		}
 	}()
 
-	next := ChainDescriptor{Mode: nonDNSUDPMode, Posture: egressPosture(byop, allowedCIDRs, deniedCIDRs)}
+	posture := egressPosture(byop, allowedCIDRs, deniedCIDRs)
+	if denyDefault {
+		posture = postureDefaultDeny
+	}
+	next := ChainDescriptor{Mode: nonDNSUDPMode, Posture: posture}
 
 	return fw.replaceChainLocked(ctx, next, func(counter *nftables.CounterObj) error {
-		fw.installRules(byop, nonDNSUDPMode, counter)
+		fw.installRulesWithPosture(byop, nonDNSUDPMode, counter, denyDefault)
 
 		return fw.bufferUserRules(allowedCIDRs, deniedCIDRs)
 	})
