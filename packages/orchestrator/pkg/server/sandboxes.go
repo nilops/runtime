@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"maps"
 	"net/http"
+	"os"
 	"slices"
 	"sync"
 	"syscall"
@@ -362,6 +363,14 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 
 		VolumeMounts:          volumeMounts,
 		MaxSandboxLengthHours: req.GetSandbox().GetMaxSandboxLength(),
+
+		// NilOps non-envd templates (NIL-207): the guest runs no envd, so the
+		// post-resume readiness wait would time out and tear the sandbox down.
+		// Node-level switch while template metadata cannot carry it yet; the
+		// factory honors it exactly like the gdb path does (sandbox.go
+		// SkipEnvdWait). envd templates are unaffected beyond losing the
+		// readiness gate, so do not enable it on mixed-purpose nodes.
+		SkipEnvdWait: os.Getenv("SANDBOX_SKIP_ENVD_WAIT") == "true",
 	})
 	childSpan.SetAttributes(
 		telemetry.WithFirecrackerVersion(config.FirecrackerConfig.FirecrackerVersion),

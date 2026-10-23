@@ -79,7 +79,7 @@ type Config struct {
 	// The exemption applies to every sandbox on the node. A wide prefix such as
 	// 0.0.0.0/0, a link-local prefix or 100.64.0.0/10 also opens cloud metadata
 	// endpoints such as 169.254.169.254.
-	AllowSandboxInternalCIDRs []string `env:"ALLOW_SANDBOX_INTERNAL_CIDRS" envDefault:"" envSeparator:","`
+	AllowSandboxInternalCIDRs []string `env:"ALLOW_SANDBOX_INTERNAL_CIDRs" envDefault:"" envSeparator:","`
 
 	// TCP firewall ports - separate ports for different traffic types to avoid
 	// protocol detection blocking on server-first protocols like SSH.
