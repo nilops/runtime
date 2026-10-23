@@ -661,6 +661,14 @@ func (s *Slot) ResetInternet(ctx context.Context) error {
 		} else if err := fw.ApplyRules(ctx, false, s.currentNonDNSUDPMode(ctx), nil, nil); err != nil {
 			return err
 		}
+
+		// The chain rebuild above does not touch conntrack: a stale
+		// ESTABLISHED entry would be accepted above every drop rule of the
+		// fresh chain, past the default-deny posture's trailing drop. Drop
+		// the namespace's entries with the tenant.
+		if err := fw.FlushConntrack(); err != nil {
+			return fmt.Errorf("flush conntrack at release: %w", err)
+		}
 	}
 
 	// Whatever the mode, every counter is read before the slot can carry

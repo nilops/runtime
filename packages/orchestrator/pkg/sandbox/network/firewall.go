@@ -16,6 +16,7 @@ import (
 	"github.com/google/nftables/expr"
 	"github.com/ngrok/firewall_toolkit/pkg/expressions"
 	"github.com/ngrok/firewall_toolkit/pkg/set"
+	"github.com/vishvananda/netlink"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 
@@ -878,6 +879,27 @@ func (fw *Firewall) applyRulesWithPosture(ctx context.Context, byop bool, nonDNS
 		fw.installRulesWithPosture(byop, nonDNSUDPMode, counter, denyDefault)
 
 		return fw.bufferUserRules(allowedCIDRs, deniedCIDRs)
+	})
+}
+
+// FlushConntrack drops every conntrack entry the slot's network namespace
+// holds. The filter chain accepts ESTABLISHED/RELATED above every drop rule
+// (the control plane's replies depend on that order), so entries a previous
+// tenant left behind — or entries a guest created in a flow the drop rule
+// killed — must not survive the tenant boundary: a recycled slot with a
+// stale ESTABLISHED entry would accept its packets past the default-deny
+// posture's trailing drop. Conntrack tables are per network namespace, so
+// the flush touches this slot only.
+func (fw *Firewall) FlushConntrack() error {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+
+	if fw.closed {
+		return errFirewallClosed
+	}
+
+	return fw.netNS.Do(func(_ ns.NetNS) error {
+		return netlink.ConntrackTableFlush(netlink.ConntrackTable)
 	})
 }
 
