@@ -2274,6 +2274,19 @@ func (s *Server) snapshotAndCacheSandbox(
 		}
 	}
 
+	// NilOps snapshot-governance v0.2 (NIL-208): hash-at-pause. Digest the
+	// artifacts the pause just wrote and emit them beside the build id, so an
+	// evidence chain can pin what a paused snapshot contains without trusting
+	// later rewrites of the metafile.
+	if digests := snapshot.DigestArtifacts(ctx); len(digests) > 0 {
+		fields := make([]zap.Field, 0, len(digests)+1)
+		fields = append(fields, zap.String("build_id", snapshot.BuildID.String()))
+		for name, d := range digests {
+			fields = append(fields, zap.String("sha256_"+name, d))
+		}
+		logger.L().Info(ctx, "snapshot artifact digests (hash-at-pause)", fields...)
+	}
+
 	return &snapshotResult{
 		meta:                 meta,
 		schedulingMetadata:   snapshot.SchedulingMetadata,
