@@ -1,0 +1,25 @@
+{
+  "source": "nilops/agent-skills",
+  "skills": {
+    "commit-conventions": {
+      "commit": "a7337d7bd251d2ee170cc22279a42c659e0ded2f\n749c471bc0febf07606fea7ed0575c72f6c245a3\n3972c1922ee6ed48ae999e147030d0e59b1a9bb3",
+      "dirty": false
+    },
+    "execution-approval-gate": {
+      "commit": "749c471bc0febf07606fea7ed0575c72f6c245a3",
+      "dirty": false
+    },
+    "github-actions-pipeline": {
+      "commit": "3972c1922ee6ed48ae999e147030d0e59b1a9bb3",
+      "dirty": false
+    },
+    "linear-issue-workflow": {
+      "commit": "3972c1922ee6ed48ae999e147030d0e59b1a9bb3",
+      "dirty": false
+    },
+    "openagents-workspace": {
+      "commit": "3972c1922ee6ed48ae999e147030d0e59b1a9bb3",
+      "dirty": false
+    }
+  }
+}
