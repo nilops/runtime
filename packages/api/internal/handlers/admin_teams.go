@@ -26,7 +26,7 @@ const adminTeamListDefaultLimit = 50
 // literally.
 var likePatternEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
-func (a *APIStore) PostAdminTeamsQuery(c *gin.Context) {
+func (a *APIStore) PostUnstableAdminTeamsQuery(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	body, err := ginutils.ParseBody[api.AdminTeamListRequest](ctx, c)
@@ -100,7 +100,6 @@ func (a *APIStore) PostAdminTeamsQuery(c *gin.Context) {
 			Id:          row.ID,
 			Email:       row.Email,
 			Name:        row.Name,
-			Tier:        row.Tier,
 			IsBanned:    row.IsBanned,
 			IsBlocked:   row.IsBlocked,
 			CreatedAt:   row.CreatedAt,
@@ -149,7 +148,7 @@ func adminTeamListFilter(body api.AdminTeamListRequest) queries.CountAdminTeamsP
 	return filter
 }
 
-func (a *APIStore) GetAdminTeamsTeamID(c *gin.Context, teamID openapi_types.UUID) {
+func (a *APIStore) GetUnstableAdminTeamsTeamID(c *gin.Context, teamID openapi_types.UUID) {
 	ctx := c.Request.Context()
 
 	// The primary, so a team just labelled or banned reads back as written.
@@ -171,7 +170,6 @@ func (a *APIStore) GetAdminTeamsTeamID(c *gin.Context, teamID openapi_types.UUID
 		Email:                   row.Email,
 		Name:                    row.Name,
 		Slug:                    row.Slug,
-		Tier:                    row.Tier,
 		CreatedAt:               row.CreatedAt,
 		IsBlocked:               row.IsBlocked,
 		IsBanned:                row.IsBanned,
@@ -182,7 +180,7 @@ func (a *APIStore) GetAdminTeamsTeamID(c *gin.Context, teamID openapi_types.UUID
 	})
 }
 
-func (a *APIStore) PutAdminTeamsTeamIDSchedulingLabels(c *gin.Context, teamID openapi_types.UUID) {
+func (a *APIStore) PutUnstableAdminTeamsTeamIDSchedulingLabels(c *gin.Context, teamID openapi_types.UUID) {
 	ctx := c.Request.Context()
 
 	body, err := ginutils.ParseBody[api.AdminTeamSchedulingLabels](ctx, c)

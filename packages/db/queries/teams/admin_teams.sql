@@ -1,6 +1,5 @@
 -- At most one of by_search_id and by_search_text is set. An empty sort_by
--- orders enterprise tiers first, then pro, then the rest. Teams missing from
--- the running arrays run no sandboxes.
+-- orders newest first. Teams missing from the running arrays run no sandboxes.
 -- name: ListAdminTeams :many
 WITH running AS (
     -- Set-returning functions in one select list advance together, pairing
@@ -10,7 +9,7 @@ WITH running AS (
         unnest(sqlc.arg(running_sandbox_counts)::bigint[]) AS sandbox_count
 )
 SELECT
-    t.id, t.email, t.name, t.tier, t.is_banned, t.is_blocked, t.created_at,
+    t.id, t.email, t.name, t.is_banned, t.is_blocked, t.created_at,
     (SELECT COUNT(*) FROM public.users_teams ut WHERE ut.team_id = t.id)::bigint AS member_count,
     COALESCE(r.sandbox_count, 0)::bigint AS running_sandbox_count
 FROM public.teams t
@@ -38,13 +37,6 @@ ORDER BY
     CASE WHEN sqlc.arg(sort_by)::text = 'createdAt' AND sqlc.arg(descending)::boolean THEN t.created_at END DESC,
     CASE WHEN sqlc.arg(sort_by)::text = 'runningSandboxes' AND NOT sqlc.arg(descending)::boolean THEN COALESCE(r.sandbox_count, 0) END ASC,
     CASE WHEN sqlc.arg(sort_by)::text = 'runningSandboxes' AND sqlc.arg(descending)::boolean THEN COALESCE(r.sandbox_count, 0) END DESC,
-    CASE WHEN sqlc.arg(sort_by)::text = '' THEN
-        CASE
-            WHEN t.tier ILIKE '%enterprise%' THEN 0
-            WHEN t.tier ILIKE '%pro%' THEN 1
-            ELSE 2
-        END
-    END ASC,
     t.created_at DESC,
     t.id DESC
 LIMIT sqlc.arg(page_size)::bigint OFFSET sqlc.arg(offset_count)::bigint;
@@ -70,7 +62,7 @@ WHERE
 
 -- name: GetAdminTeam :one
 SELECT
-    t.id, t.email, t.name, t.slug, t.tier, t.created_at,
+    t.id, t.email, t.name, t.slug, t.created_at,
     t.is_blocked, t.is_banned, t.blocked_reason,
     t.sandbox_scheduling_labels, t.cluster_id,
     c.name AS cluster_name

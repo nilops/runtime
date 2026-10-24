@@ -63,10 +63,10 @@ func postAdminTeamsQuery(t *testing.T, store *APIStore, body string) (int, api.A
 
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
-	ginCtx.Request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/admin/teams/query", strings.NewReader(body))
+	ginCtx.Request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/unstable/admin/teams/query", strings.NewReader(body))
 	ginCtx.Request.Header.Set("Content-Type", "application/json")
 
-	store.PostAdminTeamsQuery(ginCtx)
+	store.PostUnstableAdminTeamsQuery(ginCtx)
 
 	var list api.AdminTeamList
 	if recorder.Code == http.StatusOK {
@@ -87,7 +87,7 @@ func adminTeamIDs(list api.AdminTeamList) []uuid.UUID {
 
 // Every list below is bounded by creation date, which leaves out the system
 // team the migrations create.
-func TestPostAdminTeamsQueryAppliesFilters(t *testing.T) {
+func TestPostUnstableAdminTeamsQueryAppliesFilters(t *testing.T) {
 	t.Parallel()
 
 	testDB := testutils.SetupDatabase(t)
@@ -165,7 +165,7 @@ func TestPostAdminTeamsQueryAppliesFilters(t *testing.T) {
 	}
 }
 
-func TestPostAdminTeamsQueryCountsEveryMatchingTeamAcrossPages(t *testing.T) {
+func TestPostUnstableAdminTeamsQueryCountsEveryMatchingTeamAcrossPages(t *testing.T) {
 	t.Parallel()
 
 	testDB := testutils.SetupDatabase(t)
@@ -190,7 +190,7 @@ func TestPostAdminTeamsQueryCountsEveryMatchingTeamAcrossPages(t *testing.T) {
 	require.Equal(t, int64(5), list.Total)
 }
 
-func TestPostAdminTeamsQueryOrdersByRunningSandboxesWithCounts(t *testing.T) {
+func TestPostUnstableAdminTeamsQueryOrdersByRunningSandboxesWithCounts(t *testing.T) {
 	t.Parallel()
 
 	testDB := testutils.SetupDatabase(t)
@@ -227,7 +227,7 @@ func TestPostAdminTeamsQueryOrdersByRunningSandboxesWithCounts(t *testing.T) {
 	require.Equal(t, []uuid.UUID{idleNew, idleOld, quiet, busy}, adminTeamIDs(list))
 }
 
-func TestPostAdminTeamsQueryListsEnterpriseThenProTeamsFirstByDefault(t *testing.T) {
+func TestPostUnstableAdminTeamsQueryDefaultOrderIgnoresTheTier(t *testing.T) {
 	t.Parallel()
 
 	testDB := testutils.SetupDatabase(t)
@@ -242,10 +242,10 @@ func TestPostAdminTeamsQueryListsEnterpriseThenProTeamsFirstByDefault(t *testing
 
 	code, list, body := postAdminTeamsQuery(t, store, `{"sortOrder":"asc","createdBefore":"2026-06-01T00:00:00Z"}`)
 	require.Equal(t, http.StatusOK, code, body)
-	require.Equal(t, []uuid.UUID{enterprise, pro, baseNew, baseOld}, adminTeamIDs(list))
+	require.Equal(t, []uuid.UUID{baseNew, pro, baseOld, enterprise}, adminTeamIDs(list))
 }
 
-func TestPostAdminTeamsQueryFailsWhenRunningCountsAreUnavailable(t *testing.T) {
+func TestPostUnstableAdminTeamsQueryFailsWhenRunningCountsAreUnavailable(t *testing.T) {
 	t.Parallel()
 
 	store := &APIStore{teamSandboxCounter: fakeTeamRunningSandboxCounter{err: errors.New("redis unavailable")}}
@@ -256,7 +256,7 @@ func TestPostAdminTeamsQueryFailsWhenRunningCountsAreUnavailable(t *testing.T) {
 	require.JSONEq(t, `{"code":500,"message":"Failed to count running sandboxes"}`, body)
 }
 
-func TestPostAdminTeamsQueryListsWithoutRunningCountsUnlessSortedByThem(t *testing.T) {
+func TestPostUnstableAdminTeamsQueryListsWithoutRunningCountsUnlessSortedByThem(t *testing.T) {
 	t.Parallel()
 
 	testDB := testutils.SetupDatabase(t)
@@ -279,14 +279,14 @@ func getAdminTeam(t *testing.T, store *APIStore, teamID uuid.UUID) *httptest.Res
 
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
-	ginCtx.Request = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/teams/"+teamID.String(), nil)
+	ginCtx.Request = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/unstable/admin/teams/"+teamID.String(), nil)
 
-	store.GetAdminTeamsTeamID(ginCtx, teamID)
+	store.GetUnstableAdminTeamsTeamID(ginCtx, teamID)
 
 	return recorder
 }
 
-func TestGetAdminTeamsTeamIDReturnsBannedTeamWithCluster(t *testing.T) {
+func TestGetUnstableAdminTeamsTeamIDReturnsBannedTeamWithCluster(t *testing.T) {
 	t.Parallel()
 
 	testDB := testutils.SetupDatabase(t)
@@ -306,7 +306,6 @@ func TestGetAdminTeamsTeamIDReturnsBannedTeamWithCluster(t *testing.T) {
 	require.Equal(t, "Test Team "+teamID.String(), body.Name)
 	require.Equal(t, "test-"+teamID.String()+"@example.com", body.Email)
 	require.Equal(t, "test-team-"+teamID.String()[:8], body.Slug)
-	require.Equal(t, "base_v1", body.Tier)
 	require.True(t, body.IsBanned)
 	require.True(t, body.IsBlocked)
 	require.Equal(t, new("abuse"), body.BlockedReason)
@@ -315,7 +314,7 @@ func TestGetAdminTeamsTeamIDReturnsBannedTeamWithCluster(t *testing.T) {
 	require.Equal(t, new("eu-west"), body.ClusterName)
 }
 
-func TestGetAdminTeamsTeamIDReturnsEmptyLabelsAsAList(t *testing.T) {
+func TestGetUnstableAdminTeamsTeamIDReturnsEmptyLabelsAsAList(t *testing.T) {
 	t.Parallel()
 
 	testDB := testutils.SetupDatabase(t)
@@ -331,7 +330,7 @@ func TestGetAdminTeamsTeamIDReturnsEmptyLabelsAsAList(t *testing.T) {
 	require.Nil(t, body["clusterName"])
 }
 
-func TestGetAdminTeamsTeamIDRejectsUnknownTeam(t *testing.T) {
+func TestGetUnstableAdminTeamsTeamIDRejectsUnknownTeam(t *testing.T) {
 	t.Parallel()
 
 	testDB := testutils.SetupDatabase(t)
@@ -347,10 +346,10 @@ func putAdminTeamSchedulingLabels(t *testing.T, store *APIStore, teamID uuid.UUI
 
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
-	ginCtx.Request = httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/admin/teams/"+teamID.String()+"/scheduling-labels", strings.NewReader(body))
+	ginCtx.Request = httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/unstable/admin/teams/"+teamID.String()+"/scheduling-labels", strings.NewReader(body))
 	ginCtx.Request.Header.Set("Content-Type", "application/json")
 
-	store.PutAdminTeamsTeamIDSchedulingLabels(ginCtx, teamID)
+	store.PutUnstableAdminTeamsTeamIDSchedulingLabels(ginCtx, teamID)
 
 	return recorder
 }
@@ -376,7 +375,7 @@ func teamSchedulingLabels(t *testing.T, db *testutils.Database, teamID uuid.UUID
 	return labels
 }
 
-func TestPutAdminTeamsTeamIDSchedulingLabelsWritesDedupedLabelsAndEvictsTeam(t *testing.T) {
+func TestPutUnstableAdminTeamsTeamIDSchedulingLabelsWritesDedupedLabelsAndEvictsTeam(t *testing.T) {
 	t.Parallel()
 
 	testDB := testutils.SetupDatabase(t)
@@ -393,7 +392,7 @@ func TestPutAdminTeamsTeamIDSchedulingLabelsWritesDedupedLabelsAndEvictsTeam(t *
 	require.Equal(t, []uuid.UUID{teamID}, invalidated)
 }
 
-func TestPutAdminTeamsTeamIDSchedulingLabelsClearsLabelsWithAnEmptyList(t *testing.T) {
+func TestPutUnstableAdminTeamsTeamIDSchedulingLabelsClearsLabelsWithAnEmptyList(t *testing.T) {
 	t.Parallel()
 
 	testDB := testutils.SetupDatabase(t)
@@ -410,7 +409,7 @@ func TestPutAdminTeamsTeamIDSchedulingLabelsClearsLabelsWithAnEmptyList(t *testi
 	require.Empty(t, teamSchedulingLabels(t, testDB, teamID))
 }
 
-func TestPutAdminTeamsTeamIDSchedulingLabelsRejectsUnknownTeam(t *testing.T) {
+func TestPutUnstableAdminTeamsTeamIDSchedulingLabelsRejectsUnknownTeam(t *testing.T) {
 	t.Parallel()
 
 	testDB := testutils.SetupDatabase(t)
@@ -424,7 +423,7 @@ func TestPutAdminTeamsTeamIDSchedulingLabelsRejectsUnknownTeam(t *testing.T) {
 	require.Empty(t, invalidated)
 }
 
-func TestPutAdminTeamsTeamIDSchedulingLabelsSucceedsWhenEvictionFailsAfterWriting(t *testing.T) {
+func TestPutUnstableAdminTeamsTeamIDSchedulingLabelsSucceedsWhenEvictionFailsAfterWriting(t *testing.T) {
 	t.Parallel()
 
 	testDB := testutils.SetupDatabase(t)
