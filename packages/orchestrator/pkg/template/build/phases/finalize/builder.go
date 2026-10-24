@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -197,6 +198,13 @@ func (ppb *PostProcessingBuilder) Build(
 	sandboxOptions := []layer.CreateSandboxOption{
 		layer.WithIoEngine(ioEngine),
 	}
+	// NilOps non-envd templates (NIL-207): the finalize boot of a template
+	// whose rootfs ships without envd never answers the readiness wait, so the
+	// build would fail here. Gated per node while template metadata cannot
+	// carry the agent type yet; leaving it off keeps upstream behavior.
+	if os.Getenv("SANDBOX_SKIP_ENVD_WAIT") == "true" {
+		sandboxOptions = append(sandboxOptions, layer.WithSkipEnvdWait())
+	}
 	if sourceLayer.Cached {
 		sandboxOptions = append(sandboxOptions, layer.ReservedBlocksOptions(ctx, ppb.featureFlags, ppb.Config.RootfsBlockSize())...)
 	}
@@ -221,7 +229,9 @@ func (ppb *PostProcessingBuilder) Build(
 			SourceTemplate: templateProvider,
 			CurrentLayer:   currentLayer.Metadata,
 			Hash:           currentLayer.Hash,
-			UpdateEnvd:     sourceLayer.Cached,
+			// Non-envd templates cannot take the live envd update (nothing
+			// listens on :49983), so drop it alongside the skipped wait.
+			UpdateEnvd:     sourceLayer.Cached && os.Getenv("SANDBOX_SKIP_ENVD_WAIT") != "true",
 			SandboxCreator: sandboxCreator,
 			ActionExecutor: actionExecutor,
 			BuildOrigin:    storage.ObjectOriginTemplateBuild,
@@ -278,6 +288,17 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger) lay
 	return func(ctx context.Context, sbx *sandbox.Sandbox, meta metadata.Template) (cm metadata.Template, e error) {
 		ctx, span := tracer.Start(ctx, "run postprocessing")
 		defer span.End()
+
+		// NilOps non-envd templates (NIL-207): every guest step below — cert
+		// bundle, disk sync, configuration script, start and ready commands —
+		// executes through envd, which this template's finalize boot does not
+		// run. Skip them all and let the layer snapshot proceed; the template
+		// is then whatever the rootfs already holds.
+		if os.Getenv("SANDBOX_SKIP_ENVD_WAIT") == "true" {
+			userLogger.Info(ctx, "non-envd template: skipping guest post-processing (cert/sync/config/start/ready)")
+
+			return meta, nil
+		}
 
 		defer func() {
 			if e != nil {

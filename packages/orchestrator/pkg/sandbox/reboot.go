@@ -335,7 +335,12 @@ func (f *Factory) RebootSandbox(
 		sbx.offlineEnvdVersion.Store(&offlineEnvdVersion)
 	}
 
-	if err := sbx.WaitForEnvd(ctx, StartTypeReboot, rebootEnvdTimeout); err != nil {
+	// NilOps non-envd template (NIL-207): no envd will answer the reboot
+	// readiness wait — the same gate the resume factory honors (sandbox.go
+	// SkipEnvdWait). Only the wait is skipped; the sandbox still boots.
+	if config.SkipEnvdWait {
+		telemetry.ReportEvent(ctx, "skipping envd wait after reboot (non-envd template)")
+	} else if err := sbx.WaitForEnvd(ctx, StartTypeReboot, rebootEnvdTimeout); err != nil {
 		closeErr := sbx.Close(context.WithoutCancel(ctx))
 
 		return nil, errors.Join(fmt.Errorf("wait for envd after reboot: %w", err), closeErr)

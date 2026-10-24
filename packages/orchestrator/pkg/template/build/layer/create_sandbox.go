@@ -35,6 +35,7 @@ type CreateSandbox struct {
 
 	rootfsCachePath string
 	ioEngine        *string
+	skipEnvdWait    bool
 	preBootFn       sandbox.PreBootFn
 	inspectFstab    fstabInspector
 }
@@ -51,6 +52,7 @@ type createSandboxOptions struct {
 	ioEngine        *string
 	preBootFn       sandbox.PreBootFn
 	inspectFstab    fstabInspector
+	skipEnvdWait    bool
 }
 
 type CreateSandboxOption func(*createSandboxOptions)
@@ -58,6 +60,17 @@ type CreateSandboxOption func(*createSandboxOptions)
 func WithIoEngine(ioEngine string) CreateSandboxOption {
 	return func(opts *createSandboxOptions) {
 		opts.ioEngine = &ioEngine
+	}
+}
+
+// WithSkipEnvdWait skips the post-boot envd readiness wait for this build
+// boot. NilOps non-envd templates (NIL-207): the finalize boot of a template
+// whose envd enablement symlink was removed never starts envd, so the wait
+// would time out and fail the build. Base/RUN boots must NOT set it — their
+// steps execute through envd.
+func WithSkipEnvdWait() CreateSandboxOption {
+	return func(opts *createSandboxOptions) {
+		opts.skipEnvdWait = true
 	}
 }
 
@@ -107,6 +120,7 @@ func NewCreateSandbox(config *sandbox.Config, sandboxFactory *sandbox.Factory, t
 		rootfsCachePath: opts.rootfsCachePath,
 		sandboxFactory:  sandboxFactory,
 		ioEngine:        opts.ioEngine,
+		skipEnvdWait:    opts.skipEnvdWait,
 		preBootFn:       opts.preBootFn,
 		inspectFstab:    opts.inspectFstab,
 	}
@@ -181,11 +195,17 @@ func (cs *CreateSandbox) Sandbox(
 		}
 	}()
 
-	err = sbx.WaitForEnvd(
-		ctx,
-		sandbox.StartTypeCreate,
-		waitEnvdTimeout,
-	)
+	if cs.skipEnvdWait {
+		// Non-envd template finalize (NIL-207): no envd will ever answer;
+		// proceed straight to the action/snapshot like the gdb path does.
+		layerExecutor.logger.Info(ctx, "skipping envd wait (non-envd template finalize)")
+	} else {
+		err = sbx.WaitForEnvd(
+			ctx,
+			sandbox.StartTypeCreate,
+			waitEnvdTimeout,
+		)
+	}
 	if err != nil {
 		if diag != nil {
 			diag.annotate(ctx, layerExecutor.logger, err,

@@ -414,7 +414,11 @@ func (s *Slot) reapplyNonDNSUDPMode(ctx context.Context) (bool, error) {
 	}
 
 	egress := s.tenantEgress
-	if err := fw.ApplyRules(ctx, egress.GetEgressProxyAddress() != "", mode, egress.GetAllowedCidrs(), egress.GetDeniedCidrs()); err != nil {
+	if s.config.SandboxDefaultDenyEgress {
+		if err := fw.ApplyDefaultDenyRules(ctx, egress.GetEgressProxyAddress() != "", mode, egress.GetAllowedCidrs(), egress.GetDeniedCidrs()); err != nil {
+			return false, err
+		}
+	} else if err := fw.ApplyRules(ctx, egress.GetEgressProxyAddress() != "", mode, egress.GetAllowedCidrs(), egress.GetDeniedCidrs()); err != nil {
 		return false, err
 	}
 
@@ -582,9 +586,11 @@ func (s *Slot) ConfigureInternet(ctx context.Context, network *orchestrator.Sand
 
 	// The incoming tenant's mode decides, not the one the slot was built or
 	// recycled under; a default-posture slot already in that mode is left
-	// alone, as internet access is allowed by default.
+	// alone, as internet access is allowed by default. Under the node's
+	// default-deny posture there is no such "left alone": no-rules must
+	// still install the deny chain, so the short-circuit never applies.
 	mode := s.currentNonDNSUDPMode(ctx)
-	if !hasUserRules && !hasBYOP {
+	if !s.config.SandboxDefaultDenyEgress && !hasUserRules && !hasBYOP {
 		if fw.NonDNSUDPMode() == mode {
 			s.rememberTenant(ctx, egress)
 
@@ -594,7 +600,11 @@ func (s *Slot) ConfigureInternet(ctx context.Context, network *orchestrator.Sand
 		s.firewallCustomRules.Store(true)
 	}
 
-	if err := fw.ApplyRules(ctx, hasBYOP, mode, egress.GetAllowedCidrs(), egress.GetDeniedCidrs()); err != nil {
+	if s.config.SandboxDefaultDenyEgress {
+		if err := fw.ApplyDefaultDenyRules(ctx, hasBYOP, mode, egress.GetAllowedCidrs(), egress.GetDeniedCidrs()); err != nil {
+			return err
+		}
+	} else if err := fw.ApplyRules(ctx, hasBYOP, mode, egress.GetAllowedCidrs(), egress.GetDeniedCidrs()); err != nil {
 		return err
 	}
 	s.rememberTenant(ctx, egress)
@@ -624,7 +634,11 @@ func (s *Slot) UpdateInternet(ctx context.Context, egress *orchestrator.SandboxN
 	// Set before mutating: a partial failure must still trigger cleanup.
 	s.firewallCustomRules.Store(true)
 
-	if err := fw.ApplyRules(ctx, hasBYOP, s.currentNonDNSUDPMode(ctx), allowedCIDRs, deniedCIDRs); err != nil {
+	if s.config.SandboxDefaultDenyEgress {
+		if err := fw.ApplyDefaultDenyRules(ctx, hasBYOP, s.currentNonDNSUDPMode(ctx), allowedCIDRs, deniedCIDRs); err != nil {
+			return err
+		}
+	} else if err := fw.ApplyRules(ctx, hasBYOP, s.currentNonDNSUDPMode(ctx), allowedCIDRs, deniedCIDRs); err != nil {
 		return err
 	}
 	s.rememberTenant(ctx, egress)
@@ -680,7 +694,24 @@ func (s *Slot) ResetInternet(ctx context.Context) error {
 
 	if s.firewallCustomRules.Load() {
 		// Revert BYOP so the next tenant can't inherit non-TCP-only deny rules.
-		if err := fw.ApplyRules(ctx, false, s.currentNonDNSUDPMode(ctx), nil, nil); err != nil {
+		// Under the node's default-deny posture the reset rebuilds that same
+		// posture (empty allow rules, deny fallback), so a recycled slot never
+		// leaks back to allow-all.
+		if s.config.SandboxDefaultDenyEgress {
+			if err := fw.ApplyDefaultDenyRules(ctx, false, s.currentNonDNSUDPMode(ctx), nil, nil); err != nil {
+				return err
+			}
+
+			// The chain rebuild above does not touch conntrack: a stale
+			// ESTABLISHED entry would be accepted above every drop rule of
+			// the fresh chain, past the default-deny posture's trailing
+			// drop. Drop the namespace's entries with the tenant. Default-
+			// allow nodes keep upstream behavior: no conntrack writes and no
+			// new failure mode at release.
+			if err := fw.FlushConntrack(); err != nil {
+				return fmt.Errorf("flush conntrack at release: %w", err)
+			}
+		} else if err := fw.ApplyRules(ctx, false, s.currentNonDNSUDPMode(ctx), nil, nil); err != nil {
 			return err
 		}
 	}

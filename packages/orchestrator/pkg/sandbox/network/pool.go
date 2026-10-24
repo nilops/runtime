@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,6 +105,15 @@ type Config struct {
 
 	// VethPrefix is the prefix used for host-side sandbox veth interfaces (e.g. "e2b-").
 	VethPrefix string `env:"NETWORK_VETH_PREFIX" envDefault:"e2b-"`
+
+	// SandboxDefaultDenyEgress inverts the node's egress posture: non-TCP
+	// packets no allow rule accepted are dropped instead of accepted, and the
+	// userspace TCP egress proxy falls back to deny. The predefined allow set
+	// (the orchestrator's in-sandbox control IP: hyperloop, NFS proxy,
+	// portmapper) and ESTABLISHED/RELATED replies always pass. Meant for
+	// dedicated pentest node pools; template builds need it off (or scoped
+	// per sandbox) because builds egress freely.
+	SandboxDefaultDenyEgress bool `env:"SANDBOX_DEFAULT_DENY_EGRESS" envDefault:"false"`
 }
 
 const (
@@ -216,6 +227,15 @@ func ParseConfig() (Config, error) {
 	cfg, err := env.ParseAs[Config]()
 	if err != nil {
 		return Config{}, err
+	}
+	// NilOps: deployments (ours included) have written the
+	// ALLOW_SANDBOX_INTERNAL_CIDRs spelling, which the tag above does not
+	// match; accept it as a fallback so both spellings work instead of one
+	// silently parsing empty. An upstream fix should do the same.
+	if len(cfg.AllowSandboxInternalCIDRs) == 0 {
+		if v := os.Getenv("ALLOW_SANDBOX_INTERNAL_CIDRs"); v != "" {
+			cfg.AllowSandboxInternalCIDRs = strings.Split(v, ",")
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
