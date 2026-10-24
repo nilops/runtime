@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,7 +81,7 @@ type Config struct {
 	// The exemption applies to every sandbox on the node. A wide prefix such as
 	// 0.0.0.0/0, a link-local prefix or 100.64.0.0/10 also opens cloud metadata
 	// endpoints such as 169.254.169.254.
-	AllowSandboxInternalCIDRs []string `env:"ALLOW_SANDBOX_INTERNAL_CIDRs" envDefault:"" envSeparator:","`
+	AllowSandboxInternalCIDRs []string `env:"ALLOW_SANDBOX_INTERNAL_CIDRS" envDefault:"" envSeparator:","`
 
 	// TCP firewall ports - separate ports for different traffic types to avoid
 	// protocol detection blocking on server-first protocols like SSH.
@@ -178,6 +180,15 @@ func ParseConfig() (Config, error) {
 	cfg, err := env.ParseAs[Config]()
 	if err != nil {
 		return Config{}, err
+	}
+	// NilOps: deployments (ours included) have written the
+	// ALLOW_SANDBOX_INTERNAL_CIDRs spelling, which the tag above does not
+	// match; accept it as a fallback so both spellings work instead of one
+	// silently parsing empty. An upstream fix should do the same.
+	if len(cfg.AllowSandboxInternalCIDRs) == 0 {
+		if v := os.Getenv("ALLOW_SANDBOX_INTERNAL_CIDRs"); v != "" {
+			cfg.AllowSandboxInternalCIDRs = strings.Split(v, ",")
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err

@@ -658,16 +658,18 @@ func (s *Slot) ResetInternet(ctx context.Context) error {
 			if err := fw.ApplyDefaultDenyRules(ctx, false, s.currentNonDNSUDPMode(ctx), nil, nil); err != nil {
 				return err
 			}
+
+			// The chain rebuild above does not touch conntrack: a stale
+			// ESTABLISHED entry would be accepted above every drop rule of
+			// the fresh chain, past the default-deny posture's trailing
+			// drop. Drop the namespace's entries with the tenant. Default-
+			// allow nodes keep upstream behavior: no conntrack writes and no
+			// new failure mode at release.
+			if err := fw.FlushConntrack(); err != nil {
+				return fmt.Errorf("flush conntrack at release: %w", err)
+			}
 		} else if err := fw.ApplyRules(ctx, false, s.currentNonDNSUDPMode(ctx), nil, nil); err != nil {
 			return err
-		}
-
-		// The chain rebuild above does not touch conntrack: a stale
-		// ESTABLISHED entry would be accepted above every drop rule of the
-		// fresh chain, past the default-deny posture's trailing drop. Drop
-		// the namespace's entries with the tenant.
-		if err := fw.FlushConntrack(); err != nil {
-			return fmt.Errorf("flush conntrack at release: %w", err)
 		}
 	}
 

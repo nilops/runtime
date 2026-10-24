@@ -9,38 +9,49 @@ import (
 	"os"
 )
 
-// DigestArtifacts computes SHA-256 over the snapshot's on-disk artifacts and
-// returns them keyed by artifact name (nilOps snapshot-governance v0.2:
-// hash-at-pause evidence chain). MemoryExportDeferred snapshots omit the
-// memfile digest rather than hash a file the async seal has not finished
-// writing; the caller can digest it again once WaitMemorySealed returns.
-func (s *Snapshot) DigestArtifacts(ctx context.Context) map[string]string {
+// DigestArtifacts computes SHA-256 over the snapshot's on-disk artifacts,
+// returning digests keyed by artifact name and per-artifact errors (NilOps
+// snapshot-governance v0.2: hash-at-pause evidence chain). Failures are
+// RETURNED, never swallowed: a missing digest must stay distinguishable from
+// the feature being off. MemoryExportDeferred snapshots omit the memfile
+// digest — its async seal has not finished — and report that as an error so
+// the log shows why the key is absent.
+func (s *Snapshot) DigestArtifacts(ctx context.Context) (map[string]string, map[string]error) {
 	out := map[string]string{}
+	errs := map[string]error{}
 
-	if p, err := s.RootfsDiff.CachePath(ctx); err == nil && p != "" {
-		if d, err := sha256File(p); err == nil {
-			out["rootfs_diff"] = d
+	digest := func(name, path string) {
+		if path == "" {
+			return
 		}
-	}
-	if !s.MemoryExportDeferred {
-		if p, err := s.MemorySnapshot.Diff.CachePath(ctx); err == nil && p != "" {
-			if d, err := sha256File(p); err == nil {
-				out["memfile_diff"] = d
-			}
+		d, err := sha256File(path)
+		if err != nil {
+			errs[name] = err
+			return
 		}
-	}
-	if s.Snapfile != nil && s.Snapfile.Path() != "" {
-		if d, err := sha256File(s.Snapfile.Path()); err == nil {
-			out["snapfile"] = d
-		}
-	}
-	if s.Metafile != nil && s.Metafile.Path() != "" {
-		if d, err := sha256File(s.Metafile.Path()); err == nil {
-			out["metafile"] = d
-		}
+		out[name] = d
 	}
 
-	return out
+	if p, err := s.RootfsDiff.CachePath(ctx); err == nil {
+		digest("rootfs_diff", p)
+	} else {
+		errs["rootfs_diff"] = err
+	}
+	if s.MemoryExportDeferred {
+		errs["memfile_diff"] = fmt.Errorf("skipped: memory export deferred (async seal); digest after WaitMemorySealed")
+	} else if p, err := s.MemorySnapshot.Diff.CachePath(ctx); err == nil {
+		digest("memfile_diff", p)
+	} else {
+		errs["memfile_diff"] = err
+	}
+	if s.Snapfile != nil {
+		digest("snapfile", s.Snapfile.Path())
+	}
+	if s.Metafile != nil {
+		digest("metafile", s.Metafile.Path())
+	}
+
+	return out, errs
 }
 
 func sha256File(path string) (string, error) {

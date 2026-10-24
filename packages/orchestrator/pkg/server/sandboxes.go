@@ -2278,13 +2278,24 @@ func (s *Server) snapshotAndCacheSandbox(
 	// artifacts the pause just wrote and emit them beside the build id, so an
 	// evidence chain can pin what a paused snapshot contains without trusting
 	// later rewrites of the metafile.
-	if digests := snapshot.DigestArtifacts(ctx); len(digests) > 0 {
-		fields := make([]zap.Field, 0, len(digests)+1)
-		fields = append(fields, zap.String("build_id", snapshot.BuildID.String()))
-		for name, d := range digests {
-			fields = append(fields, zap.String("sha256_"+name, d))
+	// Hash-at-pause is NilOps snapshot-governance opt-in (NIL-208): hashing
+	// waits for the deferred rootfs seal and memfd drain and then reads whole
+	// artifacts (a 2 GB memfile ≈ seconds of SHA-256), so it must never ride
+	// the pause critical path of a node that did not ask for it.
+	if os.Getenv("SANDBOX_HASH_AT_PAUSE") == "true" {
+		if digests, errs := snapshot.DigestArtifacts(ctx); len(digests) > 0 || len(errs) > 0 {
+			fields := make([]zap.Field, 0, len(digests)+len(errs)+1)
+			fields = append(fields, zap.String("build_id", snapshot.BuildID.String()))
+			for name, d := range digests {
+				fields = append(fields, zap.String("sha256_"+name, d))
+			}
+			// Fail loud: a missing digest must be distinguishable from the
+			// feature being off — the evidence chain trusts these logs.
+			for name, err := range errs {
+				fields = append(fields, zap.String("digest_error_"+name, err.Error()))
+			}
+			logger.L().Info(ctx, "snapshot artifact digests (hash-at-pause)", fields...)
 		}
-		logger.L().Info(ctx, "snapshot artifact digests (hash-at-pause)", fields...)
 	}
 
 	return &snapshotResult{
