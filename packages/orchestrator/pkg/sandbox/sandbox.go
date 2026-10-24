@@ -533,6 +533,9 @@ type Sandbox struct {
 
 	Checks *Checks
 
+	// hold is the NIL-208 RAM-hold state; see hold.go.
+	hold holdState
+
 	// Kept here, not on Checks, so it survives checkpoints.
 	OOMKills OOMWatermark
 	// CPUWriteStuck tracks the last reported state, so each stuck episode is logged once.
