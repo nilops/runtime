@@ -297,6 +297,22 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger) lay
 		if os.Getenv("SANDBOX_SKIP_ENVD_WAIT") == "true" {
 			userLogger.Info(ctx, "non-envd template: skipping guest post-processing (cert/sync/config/start/ready)")
 
+			// The envd wait this gate removes was also the only readiness
+			// signal before the snapshot; without a replacement the snapshot
+			// races the guest boot and resumes into sandboxes that never
+			// finish booting (NIL-207 diagnosis, 2026-10-24). When the node
+			// attaches a vsock agent, wait for its health verb instead; an
+			// agent that never answers (agent-less non-envd templates) falls
+			// through to the old snapshot timing.
+			if os.Getenv("SANDBOX_VSOCK_DIR") != "" {
+				start := time.Now()
+				if err := waitForVsockAgent(ctx, sbx.Runtime.SandboxID); err != nil {
+					userLogger.Warn(ctx, "vsock agent readiness: "+err.Error())
+				} else {
+					userLogger.Info(ctx, fmt.Sprintf("vsock agent ready in %s; snapshot can proceed", time.Since(start).Round(time.Millisecond)))
+				}
+			}
+
 			return meta, nil
 		}
 
