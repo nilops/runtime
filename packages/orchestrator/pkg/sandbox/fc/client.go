@@ -405,6 +405,26 @@ func (c *apiClient) setNetworkInterface(ctx context.Context, ifaceID string, tap
 	return nil
 }
 
+// setVsock attaches the Firecracker vsock device the NilOps guest agent
+// (NIL-207 phase C) listens on: the host side is a Unix socket at udsPath,
+// the guest side is AF_VSOCK port space on guestCid.
+func (c *apiClient) setVsock(ctx context.Context, guestCid int64, udsPath string) error {
+	vsockConfig := operations.PutGuestVsockParams{
+		Context: ctx,
+		Body: &models.Vsock{
+			GuestCid: &guestCid,
+			UdsPath:  &udsPath,
+		},
+	}
+
+	_, err := c.client.Operations.PutGuestVsock(&vsockConfig)
+	if err != nil {
+		return fmt.Errorf("error setting fc vsock config: %w", err)
+	}
+
+	return nil
+}
+
 func (c *apiClient) setMachineConfig(
 	ctx context.Context,
 	vCPUCount int64,

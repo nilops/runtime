@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -480,6 +481,21 @@ func (p *Process) Create(
 	}
 	telemetry.ReportEvent(ctx, "set fc network config")
 
+	// NilOps guest agent channel (NIL-207 phase C): attach a vsock device when
+	// the node asks for one. The host-side Unix socket lands in the configured
+	// directory under the sandbox's own name; the guest agent listens on vsock
+	// port 5252 (microvm-guest-contract §1).
+	if vsockDir := os.Getenv("SANDBOX_VSOCK_DIR"); vsockDir != "" {
+		cleanStaleVsockSockets(vsockDir)
+		udsPath := filepath.Join(vsockDir, p.files.SandboxID+".vsock.sock")
+		if err := p.client.setVsock(ctx, nextVsockCid(), udsPath); err != nil {
+			fcStopErr := p.Stop(ctx)
+
+			return errors.Join(fmt.Errorf("error setting fc vsock config: %w", err), fcStopErr)
+		}
+		telemetry.ReportEvent(ctx, "set fc vsock config", attribute.String("uds_path", udsPath))
+	}
+
 	err = p.client.setMachineConfig(ctx, firecrackerVcpuCount, memoryMB, hugePages)
 	if err != nil {
 		fcStopErr := p.Stop(ctx)
@@ -815,6 +831,11 @@ func (p *Process) Resume(
 	}
 	telemetry.ReportEvent(ctx, "set fc metrics")
 
+	// A restored VM re-binds the vsock UDS its snapshot recorded; a stale
+	// file there fails the restore (see cleanStaleVsockSockets).
+	if vsockDir := os.Getenv("SANDBOX_VSOCK_DIR"); vsockDir != "" {
+		cleanStaleVsockSockets(vsockDir)
+	}
 	err = p.client.loadSnapshot(
 		ctx,
 		uffdSocketPath,
@@ -1354,4 +1375,40 @@ func (p *Process) CreateSnapshot(ctx context.Context, snapfilePath string) error
 	defer childSpan.End()
 
 	return p.client.createSnapshot(ctx, snapfilePath)
+}
+
+// cleanStaleVsockSockets removes vsock UDS files nothing serves anymore. A
+// Firecracker restore re-binds the host-side Unix socket the snapshot
+// recorded, and a leftover file from the previous FC process makes that bind
+// fail with EADDRINUSE — template builds resume layer by layer over the same
+// recorded path, and every runtime create resumes the template's recorded
+// path. A socket some live FC still accepts connections on is left alone.
+func cleanStaleVsockSockets(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".vsock.sock") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			continue // somebody is listening: live FC
+		}
+		_ = os.Remove(path)
+	}
+}
+
+// nextVsockCid hands out guest CIDs for the vsock device. CIDs only need to
+// be unique among concurrently running VMs on the host; starting well above 3
+// (0-2 are reserved) and rolling over long before 2^32 keeps collisions out
+// of any realistic node's lifetime.
+var vsockCidCounter atomic.Int64
+
+func nextVsockCid() int64 {
+	return 100 + vsockCidCounter.Add(1)%1000000
 }
