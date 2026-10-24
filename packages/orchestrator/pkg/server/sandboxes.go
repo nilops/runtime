@@ -241,6 +241,21 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		telemetry.WithEnvdVersion(req.GetSandbox().GetEnvdVersion()),
 	)
 
+	// NilOps RAM-hold resume (NIL-208): a sandbox this node holds in RAM is
+	// resumed by un-pausing its own Firecracker process — the memory never
+	// left the process, so there is no snapshot to load. Runs BEFORE the
+	// slot reservation, which would refuse the ID still live in the map.
+	if sid := req.GetSandbox().GetSandboxId(); sid != "" && os.Getenv("SANDBOX_RAM_HOLD") == "true" {
+		if held, ok := s.sandboxFactory.Sandboxes.Get(sid); ok && held.Held() {
+			if err := held.ResumeFromHold(ctx); err != nil {
+				telemetry.ReportCriticalError(ctx, "resume from RAM-hold failed", err, telemetry.WithSandboxID(sid))
+				return nil, status.Errorf(codes.Internal, "resume from RAM-hold failed for '%s': %s", sid, err)
+			}
+			sbxlogger.I(held).Info(ctx, "sandbox resumed from RAM-hold")
+			return &orchestrator.SandboxCreateResponse{ClientId: s.info.ClientId}, nil
+		}
+	}
+
 	// setup launch darkly
 	ctx = featureflags.AddToContext(
 		ctx,
@@ -795,6 +810,16 @@ func (s *Server) List(ctx context.Context, _ *emptypb.Empty) (*orchestrator.Sand
 			continue
 		}
 
+		// NilOps RAM-hold (NIL-208): the API pause chain forgets the sandbox
+		// once the pause RPC returns, so a held sandbox that still shows up
+		// here is an orphan to the API and gets killed within a poll cycle —
+		// exactly what a hold must prevent. Hide it for the duration of the
+		// hold; the held-resume branch in Create still finds it via Get, and
+		// the sandbox reappears here once resumed.
+		if sbx.Held() {
+			continue
+		}
+
 		startedAt := sbx.GetStartedAt()
 		sandboxes = append(sandboxes, &orchestrator.RunningSandbox{
 			Config:      sbx.APIStoredConfig,
@@ -1191,6 +1216,26 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 		telemetry.WithEnvdVersion(sbx.Config.Envd.Version),
 		attribute.String("balloon_mode", sbx.BalloonMode()),
 	)
+
+	// NilOps RAM-hold (NIL-208): gated by the node env, an API pause HOLDS the
+	// sandbox in RAM instead of snapshotting it. The VM pauses inside the
+	// still-running Firecracker process, nothing is written to disk
+	// (secrets-by-default for engagement memory), and the sandbox stays live
+	// in this orchestrator's map so its own Create resumes it in place. The
+	// hold ends at the TTL below, or earlier on resume/Delete.
+	if os.Getenv("SANDBOX_RAM_HOLD") == "true" {
+		if sbx.Held() {
+			return nil, status.Errorf(codes.AlreadyExists, "sandbox '%s' is already held", in.GetSandboxId())
+		}
+		if err := sbx.HoldInPlace(ctx); err != nil {
+			telemetry.ReportCriticalError(ctx, "RAM-hold failed", err, telemetry.WithSandboxID(in.GetSandboxId()))
+			return nil, status.Errorf(codes.Internal, "RAM-hold failed for '%s': %s", in.GetSandboxId(), err)
+		}
+		ttl := sandbox.RamHoldTTL()
+		time.AfterFunc(ttl, func() { s.releaseHeldSandbox(sbx) })
+		sbxlogger.I(sbx).Info(ctx, "sandbox held in RAM", zap.Duration("ttl", ttl))
+		return &orchestrator.SandboxPauseResponse{}, nil
+	}
 
 	// Flag-gated admission pre-flight: refuse retryably BEFORE any destructive
 	// step while the parent memfile header is still deduplicating.
@@ -2511,6 +2556,19 @@ func (s *Server) setupSandboxLifecycle(ctx context.Context, sbx *sandbox.Sandbox
 }
 
 // stopSandboxAsync stops the sandbox in a background goroutine.
+// releaseHeldSandbox tears a held sandbox down after its RAM-hold TTL: the
+// memory goes away with the Firecracker process and the registry entry with
+// the stop. A sandbox that was resumed (or already stopped) in the meantime
+// is left alone.
+func (s *Server) releaseHeldSandbox(sbx *sandbox.Sandbox) {
+	if !sbx.Held() {
+		return
+	}
+	sbx.SetStopReason(sandbox.StopReasonKilled)
+	sbxlogger.I(sbx).Warn(context.Background(), "RAM-hold TTL expired, releasing sandbox")
+	s.stopSandboxAsync(context.Background(), sbx)
+}
+
 func (s *Server) stopSandboxAsync(ctx context.Context, sbx *sandbox.Sandbox) {
 	releaseWork := s.info.TrackWork()
 	go func() {
