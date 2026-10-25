@@ -1225,7 +1225,11 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 	// (secrets-by-default for engagement memory), and the sandbox stays live
 	// in this orchestrator's map so its own Create resumes it in place. The
 	// hold ends at the TTL below, or earlier on resume/Delete.
-	if os.Getenv("SANDBOX_RAM_HOLD") == "true" {
+	// Forensic hold takes precedence over the plain RAM-hold when both node
+	// gates are set: it runs the full pause flow — snapshot artifacts and
+	// digests — and holds afterwards, where the RAM-hold branch below would
+	// return before any of that evidence is written.
+	if os.Getenv("SANDBOX_RAM_HOLD") == "true" && os.Getenv("SANDBOX_FORENSIC_HOLD") != "true" {
 		if sbx.Held() {
 			return nil, status.Errorf(codes.AlreadyExists, "sandbox '%s' is already held", in.GetSandboxId())
 		}
@@ -1334,7 +1338,21 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 	sbx.SetStopReason(sandbox.StopReasonPaused)
 
 	// Stop the old sandbox in background after we're done
-	defer s.stopSandboxAsync(context.WithoutCancel(ctx), sbx)
+	// NilOps forensic hold (NIL-208 inc-3): when the node gate is on, the
+	// normal pause flow still runs in full — snapshot artifacts, digests,
+	// upload — but the teardown it ends with is replaced by a hold: the VM is
+	// already paused at this point, so it stays resident as secondary
+	// evidence next to the on-disk artifacts, hidden from List, until the
+	// forensic TTL (or a Delete) releases it. Everything above this line —
+	// MarkStopping included — is the unchanged pause flow; only the ending
+	// differs.
+	if os.Getenv("SANDBOX_FORENSIC_HOLD") == "true" {
+		sbx.MarkHeldAfterPause()
+		sbx.SetHoldTimer(time.AfterFunc(sandbox.ForensicHoldTTL(), func() { s.releaseHeldSandbox(sbx) }))
+		sbxlogger.I(sbx).Info(ctx, "sandbox held for forensics; VM paused in place, artifacts retained", zap.Duration("ttl", sandbox.ForensicHoldTTL()))
+	} else {
+		defer s.stopSandboxAsync(context.WithoutCancel(ctx), sbx)
+	}
 
 	// Defer the rootfs reflink off the pause critical path when enabled: pause is a
 	// suspend, so nothing reads the diff until a later resume (which waits on the

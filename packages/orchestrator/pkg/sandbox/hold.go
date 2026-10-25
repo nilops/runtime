@@ -178,3 +178,35 @@ func (s *Sandbox) ClaimHoldForRelease() bool {
 	s.hold.expiresAt = time.Time{}
 	return true
 }
+
+// forensicHoldTTLDefault bounds a forensic hold when SANDBOX_FORENSIC_HOLD_TTL
+// is unset: evidence retention outlives a triage shift, unlike a RAM-hold.
+const forensicHoldTTLDefault = 24 * time.Hour
+
+// ForensicHoldTTL is how long a forensically held sandbox may stay before the
+// orchestrator tears it down. Overridable with SANDBOX_FORENSIC_HOLD_TTL.
+func ForensicHoldTTL() time.Duration {
+	if v := os.Getenv("SANDBOX_FORENSIC_HOLD_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		fmt.Fprintf(os.Stderr, "nilops: invalid SANDBOX_FORENSIC_HOLD_TTL %q, using default %s\n", v, forensicHoldTTLDefault)
+	}
+	return forensicHoldTTLDefault
+}
+
+// MarkHeldAfterPause marks a sandbox held when the normal pause flow has
+// already paused its VM and written the evidence snapshot (forensic hold,
+// NIL-208 inc-3). It does not touch the VM or the checks — the pause flow
+// owns both — it only arms the hold bookkeeping: the TTL release that
+// replaces the immediate teardown, and the List hiding for whatever remains
+// of the sandbox's life. The snapshot artifacts and their digests are the
+// primary evidence; the paused VM is retained live as secondary evidence
+// until the TTL (or a Delete) releases it.
+func (s *Sandbox) MarkHeldAfterPause() {
+	s.hold.mu.Lock()
+	defer s.hold.mu.Unlock()
+	s.hold.held = true
+	s.hold.listHidden = true
+	s.hold.expiresAt = time.Now().Add(ForensicHoldTTL())
+}
