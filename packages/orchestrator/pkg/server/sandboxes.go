@@ -2592,7 +2592,17 @@ func (s *Server) releaseHeldSandbox(sbx *sandbox.Sandbox) {
 	s.sandboxFactory.Sandboxes.MarkStopping(context.Background(), sbx.Runtime.SandboxID, sbx.LifecycleID)
 	sbx.SetStopReason(sandbox.StopReasonKilled)
 	sbxlogger.I(sbx).Warn(context.Background(), "RAM-hold TTL expired, releasing sandbox")
-	s.stopSandboxAsync(context.Background(), sbx)
+	// A forensic hold's pause flow already completed the stop lazy via the
+	// snapshot's Close() without killing the FC, so Stop() alone is a cached
+	// no-op there; kill the held VM directly. For a plain RAM-hold Stop()
+	// would also work — KillHeldVM does the same teardown either way.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		if err := sbx.KillHeldVM(ctx); err != nil {
+			sbxlogger.I(sbx).Warn(context.Background(), "held VM teardown error", zap.Error(err))
+		}
+	}()
 }
 
 // stopSandboxAsync stops the sandbox in a background goroutine.

@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -209,4 +210,31 @@ func (s *Sandbox) MarkHeldAfterPause() {
 	s.hold.held = true
 	s.hold.listHidden = true
 	s.hold.expiresAt = time.Now().Add(ForensicHoldTTL())
+}
+
+// KillHeldVM tears down the paused VM of a forensic hold directly. The
+// destroy-path pause flow calls Close() inside its snapshot step (rootfs
+// flush), which runs the sandbox's cleanup chain and completes the stop lazy
+// WITHOUT killing the Firecracker process — the deferred teardown that would
+// have killed it is exactly what a forensic hold replaces. A later Stop() is
+// therefore a cached no-op, and the release must signal the process itself:
+// SIGTERM, then SIGKILL (process.Stop), the cgroup, and the uffd backend,
+// mirroring doStop minus the parts Close already did.
+func (s *Sandbox) KillHeldVM(ctx context.Context) error {
+	var errs []error
+	if err := s.process.Stop(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("failed to stop FC: %w", err))
+	}
+	if err := s.cgroupHandle.Kill(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("failed to kill sandbox cgroup: %w", err))
+	}
+	select {
+	case <-s.process.Exit.Done():
+	case <-ctx.Done():
+		errs = append(errs, fmt.Errorf("failed waiting for FC exit: %w", ctx.Err()))
+	}
+	if err := s.Resources.memory.Stop(); err != nil {
+		errs = append(errs, fmt.Errorf("failed to stop uffd: %w", err))
+	}
+	return errors.Join(errs...)
 }
