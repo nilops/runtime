@@ -4,7 +4,6 @@ package sandbox
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -196,14 +195,14 @@ func ForensicHoldTTL() time.Duration {
 	return forensicHoldTTLDefault
 }
 
-// MarkHeldAfterPause marks a sandbox held when the normal pause flow has
-// already paused its VM and written the evidence snapshot (forensic hold,
-// NIL-208 inc-3). It does not touch the VM or the checks — the pause flow
-// owns both — it only arms the hold bookkeeping: the TTL release that
-// replaces the immediate teardown, and the List hiding for whatever remains
-// of the sandbox's life. The snapshot artifacts and their digests are the
-// primary evidence; the paused VM is retained live as secondary evidence
-// until the TTL (or a Delete) releases it.
+// MarkHeldAfterPause marks a sandbox held when the in-place checkpoint flow
+// has paused its VM, written the evidence snapshot and stopped at the resume
+// on purpose (forensic hold, NIL-208 inc-3 — WithHoldPaused). It arms the
+// hold bookkeeping: the TTL release, and the List hiding for the rest of the
+// hold. The snapshot artifacts and their digests are the primary evidence;
+// the paused, live VM is the secondary evidence. The sandbox stays in the
+// live map, so an early end is possible too: a Delete stops it, and the
+// held-resume branch in Create un-pauses it.
 func (s *Sandbox) MarkHeldAfterPause() {
 	s.hold.mu.Lock()
 	defer s.hold.mu.Unlock()
@@ -212,29 +211,4 @@ func (s *Sandbox) MarkHeldAfterPause() {
 	s.hold.expiresAt = time.Now().Add(ForensicHoldTTL())
 }
 
-// KillHeldVM tears down the paused VM of a forensic hold directly. The
-// destroy-path pause flow calls Close() inside its snapshot step (rootfs
-// flush), which runs the sandbox's cleanup chain and completes the stop lazy
-// WITHOUT killing the Firecracker process — the deferred teardown that would
-// have killed it is exactly what a forensic hold replaces. A later Stop() is
-// therefore a cached no-op, and the release must signal the process itself:
-// SIGTERM, then SIGKILL (process.Stop), the cgroup, and the uffd backend,
-// mirroring doStop minus the parts Close already did.
-func (s *Sandbox) KillHeldVM(ctx context.Context) error {
-	var errs []error
-	if err := s.process.Stop(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("failed to stop FC: %w", err))
-	}
-	if err := s.cgroupHandle.Kill(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("failed to kill sandbox cgroup: %w", err))
-	}
-	select {
-	case <-s.process.Exit.Done():
-	case <-ctx.Done():
-		errs = append(errs, fmt.Errorf("failed waiting for FC exit: %w", ctx.Err()))
-	}
-	if err := s.Resources.memory.Stop(); err != nil {
-		errs = append(errs, fmt.Errorf("failed to stop uffd: %w", err))
-	}
-	return errors.Join(errs...)
-}
+

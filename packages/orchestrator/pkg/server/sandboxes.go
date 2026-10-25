@@ -1225,6 +1225,51 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 	// (secrets-by-default for engagement memory), and the sandbox stays live
 	// in this orchestrator's map so its own Create resumes it in place. The
 	// hold ends at the TTL below, or earlier on resume/Delete.
+	// NilOps forensic hold (NIL-208 inc-3, redesigned): an evidence snapshot
+	// that KEEPS the VM. The destroy path below cannot serve a hold — its
+	// rootfs export closes the sandbox and kills the Firecracker process
+	// inside the pause (see the PR#5 review falsification). The in-place
+	// checkpoint path instead snapshots against the paused VM with the FC
+	// alive and resumes at the end; WithHoldPaused stops exactly at that
+	// resume, so the artifacts, digests and upload complete and the paused
+	// VM remains as secondary evidence. The sandbox stays in the live map
+	// (no MarkStopping), so Delete and the held-resume Create branch can
+	// both end the hold early; it is hidden from List for the hold's life.
+	if os.Getenv("SANDBOX_FORENSIC_HOLD") == "true" {
+		if sbx.Held() {
+			return nil, status.Errorf(codes.AlreadyExists, "sandbox '%s' is already held", in.GetSandboxId())
+		}
+		if os.Getenv("SANDBOX_HASH_AT_PAUSE") != "true" {
+			sbxlogger.I(sbx).Warn(ctx, "forensic hold without SANDBOX_HASH_AT_PAUSE: evidence snapshot will carry no digest chain")
+		}
+		deferRootfsExportForensic := s.featureFlags.BoolFlag(ctx, featureflags.DeferRootfsExportFlag)
+		res, err := s.snapshotAndCacheSandbox(
+			ctx,
+			sbx,
+			in.GetBuildId(),
+			map[string]string{storage.ObjectMetadataTemplateID: in.GetTemplateId()},
+			storage.ObjectOriginPause,
+			in.GetFilesystemOnly(),
+			deferRootfsExportForensic,
+			true,  // maintainSandbox: the in-place pipeline
+			true,  // holdPaused: stop at the resume, keep the VM paused
+		)
+		if err != nil {
+			// The in-place path resumed the sandbox on its own error paths, so
+			// the VM is running and live again; the failed pause is just a
+			// failed pause.
+			telemetry.ReportCriticalError(ctx, "forensic hold: evidence snapshot failed", err, telemetry.WithSandboxID(in.GetSandboxId()))
+			return nil, status.Errorf(codes.Internal, "forensic hold failed for '%s': %s", in.GetSandboxId(), err)
+		}
+		// Arm the hold only after the snapshot succeeded: a TTL shorter than
+		// the snapshot cannot race it, and a failed pause leaves no timer.
+		sbx.MarkHeldAfterPause()
+		sbx.SetHoldTimer(time.AfterFunc(sandbox.ForensicHoldTTL(), func() { s.releaseHeldSandbox(sbx) }))
+		s.uploadSnapshotAsync(ctx, sbx, res)
+		sbxlogger.I(sbx).Info(ctx, "sandbox held for forensics; VM paused in place, artifacts retained", zap.Duration("ttl", sandbox.ForensicHoldTTL()))
+		return &orchestrator.SandboxPauseResponse{SchedulingMetadata: res.schedulingMetadata}, nil
+	}
+
 	// Forensic hold takes precedence over the plain RAM-hold when both node
 	// gates are set: it runs the full pause flow — snapshot artifacts and
 	// digests — and holds afterwards, where the RAM-hold branch below would
@@ -1338,21 +1383,7 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 	sbx.SetStopReason(sandbox.StopReasonPaused)
 
 	// Stop the old sandbox in background after we're done
-	// NilOps forensic hold (NIL-208 inc-3): when the node gate is on, the
-	// normal pause flow still runs in full — snapshot artifacts, digests,
-	// upload — but the teardown it ends with is replaced by a hold: the VM is
-	// already paused at this point, so it stays resident as secondary
-	// evidence next to the on-disk artifacts, hidden from List, until the
-	// forensic TTL (or a Delete) releases it. Everything above this line —
-	// MarkStopping included — is the unchanged pause flow; only the ending
-	// differs.
-	if os.Getenv("SANDBOX_FORENSIC_HOLD") == "true" {
-		sbx.MarkHeldAfterPause()
-		sbx.SetHoldTimer(time.AfterFunc(sandbox.ForensicHoldTTL(), func() { s.releaseHeldSandbox(sbx) }))
-		sbxlogger.I(sbx).Info(ctx, "sandbox held for forensics; VM paused in place, artifacts retained", zap.Duration("ttl", sandbox.ForensicHoldTTL()))
-	} else {
-		defer s.stopSandboxAsync(context.WithoutCancel(ctx), sbx)
-	}
+	defer s.stopSandboxAsync(context.WithoutCancel(ctx), sbx)
 
 	// Defer the rootfs reflink off the pause critical path when enabled: pause is a
 	// suspend, so nothing reads the diff until a later resume (which waits on the
@@ -1360,7 +1391,7 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 	deferRootfsExport := s.featureFlags.BoolFlag(ctx, featureflags.DeferRootfsExportFlag)
 
 	// Fire and forget - upload completes in the background
-	res, err := s.snapshotAndCacheSandbox(ctx, sbx, in.GetBuildId(), map[string]string{storage.ObjectMetadataTemplateID: in.GetTemplateId()}, storage.ObjectOriginPause, in.GetFilesystemOnly(), deferRootfsExport, false)
+	res, err := s.snapshotAndCacheSandbox(ctx, sbx, in.GetBuildId(), map[string]string{storage.ObjectMetadataTemplateID: in.GetTemplateId()}, storage.ObjectOriginPause, in.GetFilesystemOnly(), deferRootfsExport, false, false)
 	if err != nil {
 		telemetry.ReportCriticalError(ctx, "error snapshotting sandbox", err, telemetry.WithSandboxID(in.GetSandboxId()))
 
@@ -1814,7 +1845,8 @@ func (s *Server) checkpointInPlace(ctx context.Context, sbx *sandbox.Sandbox, in
 		storage.ObjectOriginSnapshotTemplate,
 		in.GetFilesystemOnly(),
 		deferRootfsExport,
-		true, // maintainSandbox: resume in place
+		true,  // maintainSandbox: resume in place
+		false, // holdPaused
 	)
 	if err != nil {
 		telemetry.ReportCriticalError(ctx, "error snapshotting sandbox for checkpoint", err, telemetry.WithSandboxID(in.GetSandboxId()))
@@ -2239,6 +2271,7 @@ func (s *Server) snapshotAndCacheSandbox(
 	filesystemOnly bool,
 	deferRootfsExport bool,
 	maintainSandbox bool,
+	holdPaused bool,
 ) (*snapshotResult, error) {
 	meta, err := sbx.Template.Metadata()
 	if err != nil {
@@ -2260,6 +2293,9 @@ func (s *Server) snapshotAndCacheSandbox(
 	}
 	if maintainSandbox {
 		pauseOpts = append(pauseOpts, sandbox.WithMaintainSandbox())
+	}
+	if holdPaused {
+		pauseOpts = append(pauseOpts, sandbox.WithHoldPaused())
 	}
 
 	snapshot, err := sbx.Pause(ctx, meta, sandbox.SnapshotUseCasePause, pauseOpts...)
@@ -2592,17 +2628,7 @@ func (s *Server) releaseHeldSandbox(sbx *sandbox.Sandbox) {
 	s.sandboxFactory.Sandboxes.MarkStopping(context.Background(), sbx.Runtime.SandboxID, sbx.LifecycleID)
 	sbx.SetStopReason(sandbox.StopReasonKilled)
 	sbxlogger.I(sbx).Warn(context.Background(), "RAM-hold TTL expired, releasing sandbox")
-	// A forensic hold's pause flow already completed the stop lazy via the
-	// snapshot's Close() without killing the FC, so Stop() alone is a cached
-	// no-op there; kill the held VM directly. For a plain RAM-hold Stop()
-	// would also work — KillHeldVM does the same teardown either way.
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		defer cancel()
-		if err := sbx.KillHeldVM(ctx); err != nil {
-			sbxlogger.I(sbx).Warn(context.Background(), "held VM teardown error", zap.Error(err))
-		}
-	}()
+	s.stopSandboxAsync(context.Background(), sbx)
 }
 
 // stopSandboxAsync stops the sandbox in a background goroutine.
