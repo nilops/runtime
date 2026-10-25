@@ -42,6 +42,9 @@ type holdState struct {
 	held      bool
 	expiresAt time.Time
 	timer     *time.Timer
+	// fsOnly records a filesystem-only forensic hold: its resume must thaw
+	// the FIFREEZE'd rootfs (a memory hold froze nothing on disk).
+	fsOnly bool
 	// listHidden keeps a sandbox out of the server's List response. It is set
 	// for the whole life of a RAM-hold sandbox once held: the API pause chain
 	// forgets the sandbox, so a visible one reads as an orphan and the
@@ -118,6 +121,9 @@ func (s *Sandbox) HoldInPlace(ctx context.Context) error {
 func (s *Sandbox) SetHoldTimer(t *time.Timer) {
 	s.hold.mu.Lock()
 	defer s.hold.mu.Unlock()
+	if s.hold.timer != nil {
+		s.hold.timer.Stop()
+	}
 	s.hold.timer = t
 }
 
@@ -154,10 +160,42 @@ func (s *Sandbox) ResumeFromHold(ctx context.Context) error {
 		return fmt.Errorf("hold was released while resuming")
 	}
 	s.stopHoldTimerLocked()
+	fsOnly := s.hold.fsOnly
 	s.hold.held = false
 	s.hold.expiresAt = time.Time{}
 	s.hold.mu.Unlock()
 
+	// Undo what the pause froze, mirroring the in-place resume path the hold
+	// skipped: the user-cgroup unfreeze always, and for a filesystem-only
+	// hold the FIFREEZE'd rootfs — a resumed guest that cannot write is not
+	// a running sandbox. (A RAM hold froze nothing on disk; unfreeze is
+	// best-effort and harmless when nothing is frozen.)
+	s.bestEffortUnfreeze(ctx)
+	if fsOnly {
+		if err := s.thawRootfsOrLose(ctx); err != nil {
+			return fmt.Errorf("failed to thaw rootfs after hold resume: %w", err)
+		}
+	}
+
+	s.Checks = NewChecks(s)
+	go s.Checks.Start(context.WithoutCancel(ctx))
+	return nil
+}
+
+// RecoverAfterFailedForensicPause un-pauses a sandbox whose forensic-hold
+// pause FAILED after sbx.Pause already succeeded (cache write, upload start):
+// the in-place path's own error recovery only covers errors inside Pause, so
+// without this the VM would stay paused forever with nothing watching it.
+// On success the sandbox is live and healthy again; on error the VM is stuck
+// paused and the caller must tear it down.
+func (s *Sandbox) RecoverAfterFailedForensicPause(ctx context.Context) error {
+	if err := s.process.ResumeInPlace(ctx); err != nil {
+		return fmt.Errorf("failed to resume VM after failed forensic pause: %w", err)
+	}
+	// Stop the old instance first: the in-place path's own error recovery may
+	// already have restarted it, and a second NewChecks without a Stop would
+	// leave two health-check loops running forever.
+	s.Checks.Stop()
 	s.Checks = NewChecks(s)
 	go s.Checks.Start(context.WithoutCancel(ctx))
 	return nil
@@ -178,3 +216,44 @@ func (s *Sandbox) ClaimHoldForRelease() bool {
 	s.hold.expiresAt = time.Time{}
 	return true
 }
+
+// forensicHoldTTLDefault bounds a forensic hold when SANDBOX_FORENSIC_HOLD_TTL
+// is unset: evidence retention outlives a triage shift, unlike a RAM-hold.
+const forensicHoldTTLDefault = 24 * time.Hour
+
+// ForensicHoldTTL is how long a forensically held sandbox may stay before the
+// orchestrator tears it down. Overridable with SANDBOX_FORENSIC_HOLD_TTL.
+func ForensicHoldTTL() time.Duration {
+	if v := os.Getenv("SANDBOX_FORENSIC_HOLD_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		fmt.Fprintf(os.Stderr, "nilops: invalid SANDBOX_FORENSIC_HOLD_TTL %q, using default %s\n", v, forensicHoldTTLDefault)
+	}
+	return forensicHoldTTLDefault
+}
+
+// MarkHeldAfterPause marks a sandbox held when the in-place checkpoint flow
+// has paused its VM, written the evidence snapshot and stopped at the resume
+// on purpose (forensic hold, NIL-208 inc-3 — WithHoldPaused). It arms the
+// hold bookkeeping: the TTL release, and the List hiding for the rest of the
+// hold. The snapshot artifacts and their digests are the primary evidence;
+// the paused, live VM is the secondary evidence. The sandbox stays in the
+// live map, so an early end is possible too: a Delete stops it, and the
+// held-resume branch in Create un-pauses it.
+func (s *Sandbox) MarkHeldAfterPause(fsOnly bool) bool {
+	s.hold.mu.Lock()
+	defer s.hold.mu.Unlock()
+	if s.hold.held {
+		// An overlapping hold (or one armed by a racing caller) must not
+		// re-arm the bookkeeping on top of a live hold.
+		return false
+	}
+	s.hold.held = true
+	s.hold.listHidden = true
+	s.hold.fsOnly = fsOnly
+	s.hold.expiresAt = time.Now().Add(ForensicHoldTTL())
+	return true
+}
+
+
