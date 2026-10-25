@@ -811,12 +811,14 @@ func (s *Server) List(ctx context.Context, _ *emptypb.Empty) (*orchestrator.Sand
 		}
 
 		// NilOps RAM-hold (NIL-208): the API pause chain forgets the sandbox
-		// once the pause RPC returns, so a held sandbox that still shows up
-		// here is an orphan to the API and gets killed within a poll cycle —
-		// exactly what a hold must prevent. Hide it for the duration of the
-		// hold; the held-resume branch in Create still finds it via Get, and
-		// the sandbox reappears here once resumed.
-		if sbx.Held() {
+		// once the pause RPC returns, so a RAM-hold sandbox that still shows
+		// up here is an orphan to the API and gets killed within a poll
+		// cycle — exactly what a hold must prevent, and what a resume must
+		// prevent too: the resumed sandbox has no API record until the
+		// control-plane re-registers it (NIL-209 owns that hook), so it stays
+		// hidden for the rest of its life here. The held-resume branch in
+		// Create still finds it via Get.
+		if sbx.HoldListHidden() {
 			continue
 		}
 
@@ -1232,7 +1234,10 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 			return nil, status.Errorf(codes.Internal, "RAM-hold failed for '%s': %s", in.GetSandboxId(), err)
 		}
 		ttl := sandbox.RamHoldTTL()
-		time.AfterFunc(ttl, func() { s.releaseHeldSandbox(sbx) })
+		// The timer lives in the sandbox's hold state: ResumeFromHold and a
+		// later re-hold stop it, so the deadline of a PREVIOUS hold can never
+		// tear down the current one.
+		sbx.SetHoldTimer(time.AfterFunc(ttl, func() { s.releaseHeldSandbox(sbx) }))
 		sbxlogger.I(sbx).Info(ctx, "sandbox held in RAM", zap.Duration("ttl", ttl))
 		return &orchestrator.SandboxPauseResponse{}, nil
 	}
@@ -2558,17 +2563,21 @@ func (s *Server) setupSandboxLifecycle(ctx context.Context, sbx *sandbox.Sandbox
 // stopSandboxAsync stops the sandbox in a background goroutine.
 // releaseHeldSandbox tears a held sandbox down after its RAM-hold TTL: the
 // memory goes away with the Firecracker process and the registry entry with
-// the stop. A sandbox that was resumed (or already stopped) in the meantime
-// is left alone.
+// the stop. The claim is atomic against ResumeFromHold — whichever flips the
+// hold flag first wins — and MarkStopping takes the sandbox out of the live
+// map before the stop begins, so a Create racing the teardown cannot resume
+// a sandbox that is being killed.
 func (s *Server) releaseHeldSandbox(sbx *sandbox.Sandbox) {
-	if !sbx.Held() {
+	if !sbx.ClaimHoldForRelease() {
 		return
 	}
+	s.sandboxFactory.Sandboxes.MarkStopping(context.Background(), sbx.Runtime.SandboxID, sbx.LifecycleID)
 	sbx.SetStopReason(sandbox.StopReasonKilled)
 	sbxlogger.I(sbx).Warn(context.Background(), "RAM-hold TTL expired, releasing sandbox")
 	s.stopSandboxAsync(context.Background(), sbx)
 }
 
+// stopSandboxAsync stops the sandbox in a background goroutine.
 func (s *Server) stopSandboxAsync(ctx context.Context, sbx *sandbox.Sandbox) {
 	releaseWork := s.info.TrackWork()
 	go func() {
