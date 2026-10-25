@@ -306,10 +306,19 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger) lay
 			// through to the old snapshot timing.
 			if os.Getenv("SANDBOX_VSOCK_DIR") != "" {
 				start := time.Now()
-				if err := waitForVsockAgent(ctx, sbx.Runtime.SandboxID); err != nil {
-					userLogger.Warn(ctx, "vsock agent readiness: "+err.Error())
-				} else {
+				err := waitForVsockAgent(ctx, sbx.Runtime.SandboxID)
+				switch {
+				case err == nil:
 					userLogger.Info(ctx, fmt.Sprintf("vsock agent ready in %s; snapshot can proceed", time.Since(start).Round(time.Millisecond)))
+				case vsockReadyStrict():
+					// A node whose templates must carry an agent refuses a
+					// half-boot snapshot instead of shipping it green.
+					return meta, phases.NewPhaseBuildError(ppb.Metadata(), fmt.Errorf("vsock agent readiness (strict): %w", err))
+				default:
+					// Agent-less templates fall through with a warning; the
+					// snapshot timing race for them is documented in
+					// NIL-209 (generic ready signal).
+					userLogger.Warn(ctx, "vsock agent readiness: "+err.Error())
 				}
 			}
 

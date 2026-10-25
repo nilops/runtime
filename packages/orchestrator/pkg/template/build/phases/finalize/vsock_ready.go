@@ -16,11 +16,22 @@ import (
 	"time"
 )
 
-// vsockReadyTimeout bounds the readiness poll before the finalize snapshot.
-// Replaces the timing the envd wait used to provide: a snapshot taken while
-// the guest is still mid-boot resumes into sandboxes that never finish
-// booting (NIL-207 diagnosis, 2026-10-24).
-var vsockReadyTimeout = 30 * time.Second
+// vsockReadyTimeoutDefault bounds the readiness poll before the finalize
+// snapshot. Replaces the timing the envd wait used to provide: a snapshot
+// taken while the guest is still mid-boot resumes into sandboxes that never
+// finish booting (NIL-207 diagnosis, 2026-10-24). Read per call — never a
+// package-level mutable — so concurrent builds cannot race on it.
+const vsockReadyTimeoutDefault = 30 * time.Second
+
+// vsockReadyStrict, set by SANDBOX_VSOCK_READY_STRICT=true, makes a failed
+// readiness poll FAIL the build instead of falling through with a warning.
+// Fail-open keeps agent-less non-envd templates buildable; strict mode is
+// for nodes whose templates are all supposed to carry an agent, where a
+// wedged agent shipping as a green half-boot snapshot is exactly the
+// NIL-207 failure mode this poll exists to refuse.
+func vsockReadyStrict() bool {
+	return os.Getenv("SANDBOX_VSOCK_READY_STRICT") == "true"
+}
 
 // waitForVsockAgent polls the build sandbox's NilOps guest agent over its
 // Firecracker vsock UDS until it answers the health verb, then returns.
@@ -36,14 +47,18 @@ func waitForVsockAgent(ctx context.Context, sandboxID string) error {
 	if dir == "" {
 		return nil
 	}
+	timeout := vsockReadyTimeoutDefault
 	if v := os.Getenv("SANDBOX_SNAPSHOT_READY_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			vsockReadyTimeout = d
+			timeout = d
+		} else {
+			// Fail-loud on a misconfigured knob, not a silent default.
+			fmt.Fprintf(os.Stderr, "nilops: invalid SANDBOX_SNAPSHOT_READY_TIMEOUT %q, using default %s\n", v, vsockReadyTimeoutDefault)
 		}
 	}
 	udsPath := filepath.Join(dir, sandboxID+".vsock.sock")
 
-	deadline := time.Now().Add(vsockReadyTimeout)
+	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for {
 		select {
@@ -59,9 +74,13 @@ func waitForVsockAgent(ctx context.Context, sandboxID string) error {
 		if !time.Now().Before(deadline) {
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
-	return fmt.Errorf("vsock agent not ready within %s: %w", vsockReadyTimeout, lastErr)
+	return fmt.Errorf("vsock agent not ready within %s: %w", timeout, lastErr)
 }
 
 // vsockHealth runs one health call against the guest agent: dial the vsock
