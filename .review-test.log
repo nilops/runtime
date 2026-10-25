@@ -1,0 +1,123 @@
+?   	github.com/e2b-dev/infra/packages/orchestrator	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/benchmarks	0.052s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/cmd/clean-nfs-cache	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/cmd/clean-nfs-cache/cleaner	0.034s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/cmd/copy-build	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/cmd/create-build	0.031s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/cmd/dummy-orchestrator	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/cmd/hammer-file	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/cmd/inspect-build	0.033s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/cmd/internal/cmdutil	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/cmd/mount-build-rootfs	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/cmd/resume-build	0.029s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/cmd/show-build-diff	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/cmd/simulate-gcs-traffic	0.021s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/cmd/simulate-nfs-traffic	0.009s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/cmd/smoketest	0.032s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/cfg	0.021s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/chrooted	0.029s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/chrooted/testutils	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/dummyserver	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/events	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/factories	0.042s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/gcpercent	0.026s
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/healthcheck	0.065s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/hyperloopserver	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/hyperloopserver/contracts	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/hyperloopserver/handlers	0.033s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/localupload	0.023s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/metrics	0.026s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/nfsproxy	1.248s
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/nfsproxy/cfg	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/nfsproxy/chroot	0.064s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/nfsproxy/dirverifier	0.015s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/nfsproxy/handlecache	0.028s
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/nfsproxy/logged	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/nfsproxy/metrics	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/nfsproxy/mocks	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/nfsproxy/recovery	0.015s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/nfsproxy/tracing	0.016s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/portmap	0.018s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/proxy	0.041s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/routing	0.050s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox	0.313s
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/artifact	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block	0.081s
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block/metrics	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block/mocks	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/build	0.038s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/build/mocks	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/cgroup	0.010s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/envd	0.017s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/envdbin	0.027s
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/fc	0.033s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/fc/cputemplate	0.011s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/nbd	0.029s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/nbd/testutils	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network	0.014s [no tests to run]
+2026/10/25 13:54:51 Using host network cidr cidr 10.11.0.0/16
+2026/10/25 13:54:51 Using vrt network cidr 10.12.0.0/16
+2026/10/25 13:54:51 Using vrt network cidr 10.12.0.0/16
+2026/10/25 13:54:51 Using network slot size: 32766
+panic: cannot reset the host firewall table: ensure sets: flush sets: netlink receive: operation not permitted
+
+goroutine 1 [running]:
+github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network/v2.TestMain(0x3d0fbde610e0)
+	/app/packages/orchestrator/pkg/sandbox/network/v2/main_test.go:18 +0xab
+main.main()
+	_testmain.go:150 +0xa5
+FAIL	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network/v2	0.011s
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/rootfs	0.066s
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/socket	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template	4.356s
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template/mocks	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template/peerclient	0.048s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template/peerserver	0.038s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template/peerserver/mocks	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/uffd	0.044s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/uffd/fdexit	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/uffd/memory	0.040s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/uffd/prefetch	0.030s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/uffd/testutils	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/uffd/testutils/testharness	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/uffd/userfaultfd	0.039s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/scheduling	0.024s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/server	0.110s
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/service	0.037s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/service/machineinfo	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/startupreclaim	0.050s
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/tcpfirewall	0.046s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build	0.044s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/buildcontext	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/builderrors	0.027s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/buildlogger	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/commands	0.031s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/config	0.027s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/core/envd	0.004s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/core/filesystem	0.010s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/core/fstab	0.006s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/core/oci	0.010s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/core/oci/auth	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/core/rootfs	0.059s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/layer	0.047s
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/metrics	0.009s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/phases	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/phases/base	0.019s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/phases/base/distro	0.003s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/phases/ensurefreedisk	0.016s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/phases/finalize	0.023s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/phases/optimize	0.018s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/phases/steps	0.017s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/phases/user	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/sandboxtools	0.016s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/storage/cache	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/storage/paths	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/writer	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/cache	[no test files]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/constants	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/metadata	0.014s [no tests to run]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/template/server	0.015s [no tests to run]
+?   	github.com/e2b-dev/infra/packages/orchestrator/pkg/version	[no test files]
+ok  	github.com/e2b-dev/infra/packages/orchestrator/pkg/volumes	0.012s [no tests to run]
+FAIL

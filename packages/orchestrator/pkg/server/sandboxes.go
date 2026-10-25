@@ -1301,7 +1301,12 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 		}
 		// Arm the hold only after the snapshot succeeded: a TTL shorter than
 		// the snapshot cannot race it, and a failed pause leaves no timer.
-		if !sbx.MarkHeldAfterPause(in.GetFilesystemOnly()) {
+		// The thaw gate is the ACTUAL freeze outcome, not the request flag:
+		// an fs-only pause can fall back to a plain sync without FIFREEZE
+		// (old envd, no fsfreeze binary), and thawing an unfrozen rootfs
+		// would destroy a healthy sandbox on resume — the same invariant the
+		// in-place path applies (filesystemSnapshot && frozen).
+		if !sbx.MarkHeldAfterPause(res.meta.IsFsQuiesced()) {
 			// Serialized by BeginCheckpoint + the Held check; if it still
 			// raced, refuse rather than double-arm.
 			return nil, status.Errorf(codes.Internal, "forensic hold lost the arm race for '%s'", in.GetSandboxId())
