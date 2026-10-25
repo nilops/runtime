@@ -42,6 +42,9 @@ type holdState struct {
 	held      bool
 	expiresAt time.Time
 	timer     *time.Timer
+	// fsOnly records a filesystem-only forensic hold: its resume must thaw
+	// the FIFREEZE'd rootfs (a memory hold froze nothing on disk).
+	fsOnly bool
 	// listHidden keeps a sandbox out of the server's List response. It is set
 	// for the whole life of a RAM-hold sandbox once held: the API pause chain
 	// forgets the sandbox, so a visible one reads as an orphan and the
@@ -157,9 +160,22 @@ func (s *Sandbox) ResumeFromHold(ctx context.Context) error {
 		return fmt.Errorf("hold was released while resuming")
 	}
 	s.stopHoldTimerLocked()
+	fsOnly := s.hold.fsOnly
 	s.hold.held = false
 	s.hold.expiresAt = time.Time{}
 	s.hold.mu.Unlock()
+
+	// Undo what the pause froze, mirroring the in-place resume path the hold
+	// skipped: the user-cgroup unfreeze always, and for a filesystem-only
+	// hold the FIFREEZE'd rootfs — a resumed guest that cannot write is not
+	// a running sandbox. (A RAM hold froze nothing on disk; unfreeze is
+	// best-effort and harmless when nothing is frozen.)
+	s.bestEffortUnfreeze(ctx)
+	if fsOnly {
+		if err := s.thawRootfsOrLose(ctx); err != nil {
+			return fmt.Errorf("failed to thaw rootfs after hold resume: %w", err)
+		}
+	}
 
 	s.Checks = NewChecks(s)
 	go s.Checks.Start(context.WithoutCancel(ctx))
@@ -176,6 +192,10 @@ func (s *Sandbox) RecoverAfterFailedForensicPause(ctx context.Context) error {
 	if err := s.process.ResumeInPlace(ctx); err != nil {
 		return fmt.Errorf("failed to resume VM after failed forensic pause: %w", err)
 	}
+	// Stop the old instance first: the in-place path's own error recovery may
+	// already have restarted it, and a second NewChecks without a Stop would
+	// leave two health-check loops running forever.
+	s.Checks.Stop()
 	s.Checks = NewChecks(s)
 	go s.Checks.Start(context.WithoutCancel(ctx))
 	return nil
@@ -221,7 +241,7 @@ func ForensicHoldTTL() time.Duration {
 // the paused, live VM is the secondary evidence. The sandbox stays in the
 // live map, so an early end is possible too: a Delete stops it, and the
 // held-resume branch in Create un-pauses it.
-func (s *Sandbox) MarkHeldAfterPause() bool {
+func (s *Sandbox) MarkHeldAfterPause(fsOnly bool) bool {
 	s.hold.mu.Lock()
 	defer s.hold.mu.Unlock()
 	if s.hold.held {
@@ -231,6 +251,7 @@ func (s *Sandbox) MarkHeldAfterPause() bool {
 	}
 	s.hold.held = true
 	s.hold.listHidden = true
+	s.hold.fsOnly = fsOnly
 	s.hold.expiresAt = time.Now().Add(ForensicHoldTTL())
 	return true
 }

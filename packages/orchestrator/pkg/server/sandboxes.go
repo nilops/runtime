@@ -866,9 +866,14 @@ func (s *Server) Delete(ctxConn context.Context, in *orchestrator.SandboxDeleteR
 	if err != nil {
 		return nil, err
 	}
+
 	if sbx == nil {
 		return &emptypb.Empty{}, nil
 	}
+
+	// A Delete ends any RAM/forensic hold with the sandbox: claim the hold so
+	// its TTL timer stops and a later release logs nothing for the dead VM.
+	sbx.ClaimHoldForRelease()
 
 	childSpan.SetAttributes(
 		telemetry.WithTeamID(sbx.Runtime.TeamID),
@@ -1195,6 +1200,7 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 
 	sbx, ok := s.sandboxFactory.Sandboxes.Get(in.GetSandboxId())
 	if !ok {
+
 		// A checkpoint holds the sandbox out of the live map until its
 		// resumed sandbox is live. ResourceExhausted, not the
 		// FailedPrecondition the Checkpoint RPC answers: the API's pause
@@ -1212,8 +1218,12 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 
 	// A snapshot (checkpoint or forensic hold) holds the sandbox out of the
 	// usual pause serialization; racing it with a destroy pause would resume
-	// the VM underneath the running export.
-	if sbx.CheckpointInFlight() {
+	// the VM underneath the running export. Gated to the NilOps hold modes so
+	// env-off behavior stays identical to upstream (mandate: env-off
+	// identical when the gates are off — the upstream race this guards
+	// against exists on main and is not ours to change here).
+	if sbx.CheckpointInFlight() &&
+		(os.Getenv("SANDBOX_RAM_HOLD") == "true" || os.Getenv("SANDBOX_FORENSIC_HOLD") == "true") {
 		return nil, status.Errorf(codes.ResourceExhausted, "a pause or checkpoint is already in progress for sandbox '%s', please retry", in.GetSandboxId())
 	}
 
@@ -1291,7 +1301,7 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 		}
 		// Arm the hold only after the snapshot succeeded: a TTL shorter than
 		// the snapshot cannot race it, and a failed pause leaves no timer.
-		if !sbx.MarkHeldAfterPause() {
+		if !sbx.MarkHeldAfterPause(in.GetFilesystemOnly()) {
 			// Serialized by BeginCheckpoint + the Held check; if it still
 			// raced, refuse rather than double-arm.
 			return nil, status.Errorf(codes.Internal, "forensic hold lost the arm race for '%s'", in.GetSandboxId())
@@ -1994,6 +2004,16 @@ func (s *Server) checkpointResumeFreshWith(callerCtx context.Context, steps resu
 		return nil, errSandboxOperationInProgress(in.GetSandboxId())
 	}
 
+	// The entry-side Held gate can be overtaken: a forensic hold that
+	// completes while this call waited in admission or on the claim releases
+	// BeginCheckpoint, and the reservation below would then tear the held VM
+	// down as evidence-destroying as any Pause race. Re-check under the claim
+	// — nothing can arm a hold between here and the reservation.
+	if sbx.Held() {
+		op.release()
+		return nil, status.Errorf(codes.FailedPrecondition, "sandbox '%s' is held", in.GetSandboxId())
+	}
+
 	var (
 		reservation *sandbox.Reservation
 		rollback    *sandbox.Cleanup
@@ -2672,7 +2692,7 @@ func (s *Server) releaseHeldSandbox(sbx *sandbox.Sandbox) {
 	}
 	s.sandboxFactory.Sandboxes.MarkStopping(context.Background(), sbx.Runtime.SandboxID, sbx.LifecycleID)
 	sbx.SetStopReason(sandbox.StopReasonKilled)
-	sbxlogger.I(sbx).Warn(context.Background(), "RAM-hold TTL expired, releasing sandbox")
+	sbxlogger.I(sbx).Warn(context.Background(), "held sandbox TTL expired (RAM or forensic hold), releasing")
 	s.stopSandboxAsync(context.Background(), sbx)
 }
 
