@@ -118,6 +118,9 @@ func (s *Sandbox) HoldInPlace(ctx context.Context) error {
 func (s *Sandbox) SetHoldTimer(t *time.Timer) {
 	s.hold.mu.Lock()
 	defer s.hold.mu.Unlock()
+	if s.hold.timer != nil {
+		s.hold.timer.Stop()
+	}
 	s.hold.timer = t
 }
 
@@ -163,6 +166,21 @@ func (s *Sandbox) ResumeFromHold(ctx context.Context) error {
 	return nil
 }
 
+// RecoverAfterFailedForensicPause un-pauses a sandbox whose forensic-hold
+// pause FAILED after sbx.Pause already succeeded (cache write, upload start):
+// the in-place path's own error recovery only covers errors inside Pause, so
+// without this the VM would stay paused forever with nothing watching it.
+// On success the sandbox is live and healthy again; on error the VM is stuck
+// paused and the caller must tear it down.
+func (s *Sandbox) RecoverAfterFailedForensicPause(ctx context.Context) error {
+	if err := s.process.ResumeInPlace(ctx); err != nil {
+		return fmt.Errorf("failed to resume VM after failed forensic pause: %w", err)
+	}
+	s.Checks = NewChecks(s)
+	go s.Checks.Start(context.WithoutCancel(ctx))
+	return nil
+}
+
 // ClaimHoldForRelease atomically ends the hold for a TTL teardown: it returns
 // true exactly once per hold, so a racing ResumeFromHold and a stale timer
 // from an earlier hold cannot both act, and the winner is decided under the
@@ -203,12 +221,18 @@ func ForensicHoldTTL() time.Duration {
 // the paused, live VM is the secondary evidence. The sandbox stays in the
 // live map, so an early end is possible too: a Delete stops it, and the
 // held-resume branch in Create un-pauses it.
-func (s *Sandbox) MarkHeldAfterPause() {
+func (s *Sandbox) MarkHeldAfterPause() bool {
 	s.hold.mu.Lock()
 	defer s.hold.mu.Unlock()
+	if s.hold.held {
+		// An overlapping hold (or one armed by a racing caller) must not
+		// re-arm the bookkeeping on top of a live hold.
+		return false
+	}
 	s.hold.held = true
 	s.hold.listHidden = true
 	s.hold.expiresAt = time.Now().Add(ForensicHoldTTL())
+	return true
 }
 
 

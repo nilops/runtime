@@ -245,7 +245,8 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	// resumed by un-pausing its own Firecracker process — the memory never
 	// left the process, so there is no snapshot to load. Runs BEFORE the
 	// slot reservation, which would refuse the ID still live in the map.
-	if sid := req.GetSandbox().GetSandboxId(); sid != "" && os.Getenv("SANDBOX_RAM_HOLD") == "true" {
+	if sid := req.GetSandbox().GetSandboxId(); sid != "" &&
+		(os.Getenv("SANDBOX_RAM_HOLD") == "true" || os.Getenv("SANDBOX_FORENSIC_HOLD") == "true") {
 		if held, ok := s.sandboxFactory.Sandboxes.Get(sid); ok && held.Held() {
 			if err := held.ResumeFromHold(ctx); err != nil {
 				telemetry.ReportCriticalError(ctx, "resume from RAM-hold failed", err, telemetry.WithSandboxID(sid))
@@ -1209,6 +1210,13 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 	}
 	sandboxTeamID = sbx.Runtime.TeamID
 
+	// A snapshot (checkpoint or forensic hold) holds the sandbox out of the
+	// usual pause serialization; racing it with a destroy pause would resume
+	// the VM underneath the running export.
+	if sbx.CheckpointInFlight() {
+		return nil, status.Errorf(codes.ResourceExhausted, "a pause or checkpoint is already in progress for sandbox '%s', please retry", in.GetSandboxId())
+	}
+
 	ctx = featureflags.AddToContext(ctx, sandboxFlagContexts(sbx)...)
 
 	childSpan.SetAttributes(
@@ -1239,10 +1247,22 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 		if sbx.Held() {
 			return nil, status.Errorf(codes.AlreadyExists, "sandbox '%s' is already held", in.GetSandboxId())
 		}
+		// Serialize against Checkpoint and any other pause for the whole
+		// snapshot: an overlapping pause's error recovery would resume the VM
+		// underneath the running export, silently corrupting the evidence.
+		if !sbx.BeginCheckpoint() {
+			return nil, status.Errorf(codes.ResourceExhausted, "a pause or checkpoint is already in progress for sandbox '%s', please retry", in.GetSandboxId())
+		}
+		defer sbx.EndCheckpoint()
 		if os.Getenv("SANDBOX_HASH_AT_PAUSE") != "true" {
 			sbxlogger.I(sbx).Warn(ctx, "forensic hold without SANDBOX_HASH_AT_PAUSE: evidence snapshot will carry no digest chain")
 		}
-		deferRootfsExportForensic := s.featureFlags.BoolFlag(ctx, featureflags.DeferRootfsExportFlag)
+		// The rootfs export is forced synchronous: the background seal that
+		// materializes a deferred export never runs while the VM stays
+		// paused, so deferring would leave the evidence rootfs diff
+		// un-materialized and the upload blocked on a promise nothing
+		// resolves. The memory export is forced synchronous the same way
+		// inside processMemorySnapshot (holdPaused).
 		res, err := s.snapshotAndCacheSandbox(
 			ctx,
 			sbx,
@@ -1250,20 +1270,32 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 			map[string]string{storage.ObjectMetadataTemplateID: in.GetTemplateId()},
 			storage.ObjectOriginPause,
 			in.GetFilesystemOnly(),
-			deferRootfsExportForensic,
+			false, // deferRootfsExport: never under a forensic hold
 			true,  // maintainSandbox: the in-place pipeline
 			true,  // holdPaused: stop at the resume, keep the VM paused
 		)
 		if err != nil {
-			// The in-place path resumed the sandbox on its own error paths, so
-			// the VM is running and live again; the failed pause is just a
-			// failed pause.
+			// Errors INSIDE sbx.Pause were resumed by the in-place path's own
+			// recovery; errors after its return (cache write, upload start)
+			// leave the VM paused with nothing watching it. Recover it so the
+			// failed pause leaves a healthy live sandbox; if even the
+			// recovery fails the VM is stuck paused — tear it down and say so.
 			telemetry.ReportCriticalError(ctx, "forensic hold: evidence snapshot failed", err, telemetry.WithSandboxID(in.GetSandboxId()))
-			return nil, status.Errorf(codes.Internal, "forensic hold failed for '%s': %s", in.GetSandboxId(), err)
+			if recErr := sbx.RecoverAfterFailedForensicPause(context.WithoutCancel(ctx)); recErr != nil {
+				telemetry.ReportCriticalError(ctx, "forensic hold: recovery failed, tearing sandbox down", recErr, telemetry.WithSandboxID(in.GetSandboxId()))
+				sbx.SetStopReason(sandbox.StopReasonKilled)
+				s.stopSandboxAsync(context.WithoutCancel(ctx), sbx)
+				return nil, status.Errorf(codes.Internal, "forensic hold failed for '%s' and the sandbox was torn down: %s / %s", in.GetSandboxId(), err, recErr)
+			}
+			return nil, status.Errorf(codes.FailedPrecondition, "forensic hold failed for '%s'; the sandbox is still running: %s", in.GetSandboxId(), err)
 		}
 		// Arm the hold only after the snapshot succeeded: a TTL shorter than
 		// the snapshot cannot race it, and a failed pause leaves no timer.
-		sbx.MarkHeldAfterPause()
+		if !sbx.MarkHeldAfterPause() {
+			// Serialized by BeginCheckpoint + the Held check; if it still
+			// raced, refuse rather than double-arm.
+			return nil, status.Errorf(codes.Internal, "forensic hold lost the arm race for '%s'", in.GetSandboxId())
+		}
 		sbx.SetHoldTimer(time.AfterFunc(sandbox.ForensicHoldTTL(), func() { s.releaseHeldSandbox(sbx) }))
 		s.uploadSnapshotAsync(ctx, sbx, res)
 		sbxlogger.I(sbx).Info(ctx, "sandbox held for forensics; VM paused in place, artifacts retained", zap.Duration("ttl", sandbox.ForensicHoldTTL()))
@@ -1277,6 +1309,9 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 	if os.Getenv("SANDBOX_RAM_HOLD") == "true" && os.Getenv("SANDBOX_FORENSIC_HOLD") != "true" {
 		if sbx.Held() {
 			return nil, status.Errorf(codes.AlreadyExists, "sandbox '%s' is already held", in.GetSandboxId())
+		}
+		if sbx.CheckpointInFlight() {
+			return nil, status.Errorf(codes.ResourceExhausted, "a pause or checkpoint is already in progress for sandbox '%s', please retry", in.GetSandboxId())
 		}
 		if err := sbx.HoldInPlace(ctx); err != nil {
 			telemetry.ReportCriticalError(ctx, "RAM-hold failed", err, telemetry.WithSandboxID(in.GetSandboxId()))
@@ -1550,6 +1585,13 @@ func (s *Server) checkpointRoute(ctx context.Context, sbx *sandbox.Sandbox) (str
 func (s *Server) Checkpoint(ctx context.Context, in *orchestrator.SandboxCheckpointRequest) (*orchestrator.SandboxCheckpointResponse, error) {
 	releaseWork := s.info.TrackWork()
 	defer releaseWork()
+
+	// A held sandbox (RAM or forensic) must not be checkpointed on any route:
+	// the in-place route would resume the VM out of the hold, and resume-fresh
+	// would tear it down, while the hold's timer and hidden state stay armed.
+	if held, ok := s.sandboxFactory.Sandboxes.Get(in.GetSandboxId()); ok && held.Held() {
+		return nil, status.Errorf(codes.FailedPrecondition, "sandbox '%s' is held", in.GetSandboxId())
+	}
 
 	ctx, childSpan := tracer.Start(ctx, "sandbox-checkpoint")
 	defer childSpan.End()
@@ -1827,6 +1869,9 @@ func (s *Server) checkpointInPlace(ctx context.Context, sbx *sandbox.Sandbox, in
 	// checkpoint (always in place) and a memory checkpoint routed resume-
 	// fresh on the same sandbox refuse each other. FailedPrecondition tells
 	// the API the sandbox is still healthy.
+	if sbx.Held() {
+		return nil, false, status.Errorf(codes.FailedPrecondition, "sandbox '%s' is held", in.GetSandboxId())
+	}
 	if !sbx.BeginCheckpoint() {
 		return nil, false, status.Errorf(codes.FailedPrecondition, "a checkpoint is already in progress for sandbox '%s'", in.GetSandboxId())
 	}

@@ -615,6 +615,13 @@ func (s *Sandbox) BeginCheckpoint() bool {
 	return s.checkpointInFlight.CompareAndSwap(false, true)
 }
 
+// CheckpointInFlight reports whether a checkpoint (or a forensic-hold
+// snapshot, which holds the same guard) is currently running, so pause-side
+// callers can refuse instead of racing the export.
+func (s *Sandbox) CheckpointInFlight() bool {
+	return s.checkpointInFlight.Load()
+}
+
 // EndCheckpoint clears the in-flight marker set by BeginCheckpoint.
 func (s *Sandbox) EndCheckpoint() {
 	s.lastCheckpointEndedAt.Store(time.Now().UnixNano())
@@ -2313,21 +2320,25 @@ type PauseOption func(*pauseOptions)
 // checkpoint), instead of stopping it. Combined with WithDeferredRootfsExport it
 // swaps a fresh COW cache onto the live overlay and seals the old one in the
 // background; without it the in-place export is synchronous.
+func WithMaintainSandbox() PauseOption {
+	return func(o *pauseOptions) { o.maintainSandbox = true }
+}
+
 // WithHoldPaused turns an in-place checkpoint into a forensic hold: the
 // snapshot pipeline runs to completion (artifacts, digests, upload) against
 // the paused VM, and instead of the final in-place resume the guest is left
 // paused with the Firecracker process alive. Only meaningful together with
-// WithMaintainSandbox; the destroy path kills the FC inside its rootfs
-// export, so a hold can never be built on it (NIL-208 review falsification).
+// WithMaintainSandbox (implied); the destroy path kills the FC inside its
+// rootfs export, so a hold can never be built on it (NIL-208 review
+// falsification). While the VM stays paused the background seals never run,
+// so a holdPaused pause forces both exports to be synchronous — a deferred
+// export's artifacts are materialized by the seals, and nothing would ever
+// materialize them under a hold.
 func WithHoldPaused() PauseOption {
 	return func(o *pauseOptions) {
 		o.holdPaused = true
 		o.maintainSandbox = true
 	}
-}
-
-func WithMaintainSandbox() PauseOption {
-	return func(o *pauseOptions) { o.maintainSandbox = true }
 }
 
 // WithFilesystemSnapshot makes the pause produce a filesystem-only snapshot:
@@ -2701,7 +2712,7 @@ func (s *Sandbox) Pause(
 	// invoked after the guest has resumed in place (next to startSeal).
 	var startMemSeal func(context.Context)
 	if !pauseOpts.filesystemSnapshot {
-		mem, startMemSeal, err = s.processMemorySnapshot(ctx, buildID, pauseOpts.maintainSandbox, cleanup)
+		mem, startMemSeal, err = s.processMemorySnapshot(ctx, buildID, pauseOpts.maintainSandbox, pauseOpts.holdPaused, cleanup)
 		if err != nil {
 			return nil, err
 		}
@@ -2915,7 +2926,7 @@ type MemorySnapshot struct {
 // invoked by the caller after ResumeInPlace and drives the background
 // capture; the memory diff is a DeferredDiff resolving when the capture
 // completes.
-func (s *Sandbox) processMemorySnapshot(ctx context.Context, buildID uuid.UUID, keepMemfdOpen bool, cleanup *Cleanup) (MemorySnapshot, func(context.Context), error) {
+func (s *Sandbox) processMemorySnapshot(ctx context.Context, buildID uuid.UUID, keepMemfdOpen bool, holdPaused bool, cleanup *Cleanup) (MemorySnapshot, func(context.Context), error) {
 	originalMemfile, err := s.Template.Memfile(ctx)
 	if err != nil {
 		return MemorySnapshot{}, nil, fmt.Errorf("failed to get original memfile: %w", err)
@@ -2961,6 +2972,14 @@ func (s *Sandbox) processMemorySnapshot(ctx context.Context, buildID uuid.UUID, 
 	// a deferred RSS reduction: its driver holds reported pages isolated
 	// until the ACK.)
 	deferOK := keepMemfdOpen && s.DeferredMemoryExport(ctx)
+	if holdPaused {
+		// Forensic hold: the background memory seal that materializes a
+		// deferred export never runs while the VM stays paused (Pause skips
+		// it), so a deferred export would leave the evidence memfile
+		// un-materialized and the upload blocked on a promise nothing
+		// resolves. Force the synchronous copy.
+		deferOK = false
+	}
 	fprPaused := false
 	if deferOK {
 		caps, fprErr := s.process.BalloonCaps(ctx)
