@@ -56,7 +56,11 @@ func waitForVsockAgent(ctx context.Context, sandboxID string) error {
 			fmt.Fprintf(os.Stderr, "nilops: invalid SANDBOX_SNAPSHOT_READY_TIMEOUT %q, using default %s\n", v, vsockReadyTimeoutDefault)
 		}
 	}
-	udsPath := filepath.Join(dir, sandboxID+".vsock.sock")
+	// The build sandbox's Firecracker runs behind the private bind mount of
+	// <dir>/<sandboxID> (NIL-211), so the socket setVsock names at
+	// <dir>/<sandboxID>.vsock.sock physically lands INSIDE that directory
+	// on the host.
+	udsPath := filepath.Join(dir, sandboxID, sandboxID+".vsock.sock")
 
 	deadline := time.Now().Add(timeout)
 	var lastErr error

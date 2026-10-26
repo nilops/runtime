@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/artifact"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/fc"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 )
 
@@ -22,6 +23,10 @@ import (
 // host process table. The network slots they used are reclaimed separately by
 // the network reclaim.
 func reclaimFirecrackers(ctx context.Context, procDir string) (int, []error) {
+	// Per-sandbox vsock directories (NIL-211) belong only to Firecrackers
+	// this reclaim is about to kill; sweep them alongside.
+	fc.SweepPrivateVsockDirs()
+
 	pids, err := discoverFirecrackerPIDs(procDir)
 	if err != nil {
 		return 0, []error{err}
