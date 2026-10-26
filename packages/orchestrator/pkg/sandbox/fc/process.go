@@ -966,7 +966,21 @@ func (p *Process) ExitInfo() *ExitInfo {
 	return p.exitInfo.Load()
 }
 
+// removeVsockPrivateDir drops this sandbox's private vsock directory (the
+// NIL-211 bind-mount source). Safe when absent.
+func (p *Process) removeVsockPrivateDir() {
+	dir := os.Getenv("SANDBOX_VSOCK_DIR")
+	if dir == "" {
+		return
+	}
+	_ = os.RemoveAll(filepath.Join(dir, p.files.SandboxID))
+}
+
 func (p *Process) Stop(ctx context.Context) error {
+	// The private vsock directory outlives the FC only until here: every
+	// exit path of this stop drops it (NIL-211).
+	defer p.removeVsockPrivateDir()
+
 	if p.cmd.Process == nil {
 		return errors.New("fc process not started")
 	}

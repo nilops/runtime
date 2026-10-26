@@ -3,6 +3,7 @@
 package fc
 
 import (
+	"os"
 	"bytes"
 	"fmt"
 	"path/filepath"
@@ -28,6 +29,14 @@ type startScriptArgs struct {
 	NamespaceID       string
 	FirecrackerPath   string
 	FirecrackerSocket string
+
+	// VsockPrivateDir, when set, is a per-sandbox host directory that the
+	// start script bind-mounts over VsockDir inside the Firecracker process's
+	// private mount namespace (NIL-211): a restored snapshot binds its vsock
+	// UDS at the path baked at build time, so without this every restore of
+	// the same template would collide on one socket file.
+	VsockPrivateDir string
+	VsockDir        string
 }
 
 // StartScriptResult contains the generated script and computed paths
@@ -43,7 +52,8 @@ type StartScriptResult struct {
 }
 
 const startScriptV1 = `mount --make-rprivate / &&
-
+{{ if .VsockPrivateDir }}mount --bind {{ .VsockPrivateDir }} {{ .VsockDir }} &&
+{{ end }}
 mount -t tmpfs tmpfs {{ .DeprecatedSandboxRootfsDir }} -o X-mount.mkdir &&
 ln -s {{ .HostRootfsPath }} {{ .DeprecatedSandboxRootfsDir }}/{{ .SandboxRootfsFile }} &&
 
@@ -53,7 +63,8 @@ ln -s {{ .HostKernelPath }} {{ .SandboxDir }}/{{ .SandboxKernelDir }}/{{ .Sandbo
 ip netns exec {{ .NamespaceID }} {{ .FirecrackerPath }} --api-sock {{ .FirecrackerSocket }}`
 
 const startScriptV2 = `mount --make-rprivate / &&
-mount -t tmpfs tmpfs {{ .SandboxDir }} -o X-mount.mkdir &&
+{{ if .VsockPrivateDir }}mount --bind {{ .VsockPrivateDir }} {{ .VsockDir }} &&
+{{ end }}mount -t tmpfs tmpfs {{ .SandboxDir }} -o X-mount.mkdir &&
 
 ln -s {{ .HostRootfsPath }} {{ .SandboxDir }}/{{ .SandboxRootfsFile }} &&
 
@@ -88,7 +99,7 @@ func (sb *StartScriptBuilder) buildArgs(
 	rootfsPaths RootfsPaths,
 	namespaceID string,
 ) startScriptArgs {
-	return startScriptArgs{
+	args := startScriptArgs{
 		// General
 		SandboxDir: sb.builderConfig.SandboxDir,
 
@@ -107,6 +118,21 @@ func (sb *StartScriptBuilder) buildArgs(
 		FirecrackerPath:   versions.FirecrackerPath(sb.builderConfig),
 		FirecrackerSocket: files.SandboxFirecrackerSocketPath(),
 	}
+
+	// NilOps vsock (NIL-211): give this sandbox its own view of the vsock
+	// UDS directory via a private bind mount in the FC mount namespace.
+	if dir := os.Getenv("SANDBOX_VSOCK_DIR"); dir != "" {
+		private := filepath.Join(dir, files.SandboxID)
+		if err := os.MkdirAll(private, 0o755); err != nil {
+			// The mount would fail anyway; leave the fields empty and fall
+			// back to the shared directory rather than failing the start.
+			return args
+		}
+		args.VsockDir = dir
+		args.VsockPrivateDir = private
+	}
+
+	return args
 }
 
 // GenerateScript builds and executes the start script template with the provided arguments
