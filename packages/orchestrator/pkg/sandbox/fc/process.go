@@ -169,6 +169,15 @@ type Process struct {
 	rootfsPath     string
 	kernelPath     string
 	files          *storage.SandboxFiles
+
+	// vsockPrivateDir is this sandbox's private vsock directory and
+	// vsockOwnerMarker its generation marker (NIL-211): Stop removes the
+	// directory only while the marker still exists, so a reused sandbox ID
+	// whose new generation recreated the directory is never cleaned up by
+	// the old generation's slow teardown. Empty when the node does not run
+	// the NilOps agent channel.
+	vsockPrivateDir  string
+	vsockOwnerMarker string
 	// teamID labels the per-sandbox Firecracker metrics.
 	teamID string
 	// vmVcpus is the VM's vCPU count as Resume resolved it; 0 for a booted VM or before Resume.
@@ -246,11 +255,15 @@ func NewProcess(
 	)
 
 	if err = validateFirecrackerBinary(versions, config); err != nil {
+		// No Process exists to run the stop cleanup; drop the private vsock
+		// directory here or it leaks (NIL-211 review).
+		removePrivateVsockDir(startScript.VsockPrivateDir, startScript.VsockOwnerMarker)
 		return nil, err
 	}
 
 	_, err = os.Stat(versions.HostKernelPath(config))
 	if err != nil {
+		removePrivateVsockDir(startScript.VsockPrivateDir, startScript.VsockOwnerMarker)
 		return nil, fmt.Errorf("error stating kernel file: %w", err)
 	}
 
@@ -273,6 +286,8 @@ func NewProcess(
 		client:                newApiClient(files.SandboxFirecrackerSocketPath()),
 		rootfsProvider:        rootfsProvider,
 		files:                 files,
+		vsockPrivateDir:       startScript.VsockPrivateDir,
+		vsockOwnerMarker:      startScript.VsockOwnerMarker,
 		teamID:                teamID,
 		slot:                  slot,
 
@@ -831,8 +846,10 @@ func (p *Process) Resume(
 	}
 	telemetry.ReportEvent(ctx, "set fc metrics")
 
-	// A restored VM re-binds the vsock UDS its snapshot recorded; a stale
-	// file there fails the restore (see cleanStaleVsockSockets).
+	// A restored VM re-binds the vsock UDS its snapshot recorded — now inside
+	// this sandbox's private bind-mounted directory (NIL-211), so a stale
+	// file only breaks THIS sandbox's restore; cleanStaleVsockSockets still
+	// sweeps the shared root for nodes running the pre-private-dir layout.
 	if vsockDir := os.Getenv("SANDBOX_VSOCK_DIR"); vsockDir != "" {
 		cleanStaleVsockSockets(vsockDir)
 	}
@@ -966,14 +983,47 @@ func (p *Process) ExitInfo() *ExitInfo {
 	return p.exitInfo.Load()
 }
 
-// removeVsockPrivateDir drops this sandbox's private vsock directory (the
-// NIL-211 bind-mount source). Safe when absent.
+// removeVsockPrivateDir drops this sandbox's private vsock directory, but
+// only while its own generation marker is still there: a reused sandbox ID
+// that recreated the directory installed a NEW marker, and deleting that
+// generation's live UDS from the old teardown is exactly the cross-
+// generation race the marker exists to prevent (NIL-211 review).
 func (p *Process) removeVsockPrivateDir() {
+	removePrivateVsockDir(p.vsockPrivateDir, p.vsockOwnerMarker)
+}
+
+// removePrivateVsockDir removes dir only when the given owner marker still
+// exists inside it; empty inputs are a no-op.
+func removePrivateVsockDir(dir, ownerMarker string) {
+	if dir == "" || ownerMarker == "" {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(dir, ownerMarker)); err != nil {
+		// Missing marker: either already cleaned, or a newer generation owns
+		// the directory. Not ours to remove.
+		return
+	}
+	_ = os.RemoveAll(dir)
+}
+
+// SweepPrivateVsockDirs removes every per-sandbox vsock directory under
+// SANDBOX_VSOCK_DIR. Called at orchestrator startup next to the Firecracker
+// reclaim: leftover directories can only belong to Firecrackers the reclaim
+// is killing, so nothing live can own one.
+func SweepPrivateVsockDirs() {
 	dir := os.Getenv("SANDBOX_VSOCK_DIR")
 	if dir == "" {
 		return
 	}
-	_ = os.RemoveAll(filepath.Join(dir, p.files.SandboxID))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			_ = os.RemoveAll(filepath.Join(dir, e.Name()))
+		}
+	}
 }
 
 func (p *Process) Stop(ctx context.Context) error {

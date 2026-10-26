@@ -3,12 +3,12 @@
 package fc
 
 import (
-	"os"
 	"bytes"
 	"fmt"
+	"os"
+
 	"path/filepath"
 	txtTemplate "text/template"
-
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/cfg"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/artifact"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
@@ -49,6 +49,14 @@ type StartScriptResult struct {
 
 	// KernelPath is the computed kernel path
 	KernelPath string
+
+	// VsockPrivateDir is this sandbox's private vsock directory (the
+	// bind-mount source), empty when SANDBOX_VSOCK_DIR is unset.
+	VsockPrivateDir string
+	// VsockOwnerMarker names the generation marker file inside
+	// VsockPrivateDir; Stop removes the directory only while this marker
+	// still exists (NIL-211 cross-generation same-ID race).
+	VsockOwnerMarker string
 }
 
 const startScriptV1 = `mount --make-rprivate / &&
@@ -119,20 +127,35 @@ func (sb *StartScriptBuilder) buildArgs(
 		FirecrackerSocket: files.SandboxFirecrackerSocketPath(),
 	}
 
-	// NilOps vsock (NIL-211): give this sandbox its own view of the vsock
-	// UDS directory via a private bind mount in the FC mount namespace.
-	if dir := os.Getenv("SANDBOX_VSOCK_DIR"); dir != "" {
-		private := filepath.Join(dir, files.SandboxID)
-		if err := os.MkdirAll(private, 0o755); err != nil {
-			// The mount would fail anyway; leave the fields empty and fall
-			// back to the shared directory rather than failing the start.
-			return args
-		}
-		args.VsockDir = dir
-		args.VsockPrivateDir = private
-	}
-
 	return args
+}
+
+// preparePrivateVsockDir creates this sandbox's private vsock directory with
+// a generation marker file inside it. The marker lets a later Process.Stop
+// remove only the directory its own generation created: a new sandbox that
+// reuses the same ID recreates the directory with a NEW marker, so a slow
+// teardown of the old generation must not delete the new one's live UDS.
+// Fail-loud: a node that cannot create the directory cannot give the
+// sandbox an isolated vsock view, and silently falling back would re-open
+// the exact shared-path collision this exists to fix.
+func preparePrivateVsockDir(files *storage.SandboxFiles) (privateDir, ownerMarker string, err error) {
+	dir := os.Getenv("SANDBOX_VSOCK_DIR")
+	if dir == "" {
+		return "", "", nil
+	}
+	private := filepath.Join(dir, files.SandboxID)
+	if err := os.MkdirAll(private, 0o755); err != nil {
+		return "", "", fmt.Errorf("creating private vsock dir: %w", err)
+	}
+	marker, err := os.CreateTemp(private, ".owner-*")
+	if err != nil {
+		return "", "", fmt.Errorf("creating vsock dir owner marker: %w", err)
+	}
+	name := marker.Name()
+	if err := marker.Close(); err != nil {
+		return "", "", fmt.Errorf("closing vsock dir owner marker: %w", err)
+	}
+	return private, filepath.Base(name), nil
 }
 
 // GenerateScript builds and executes the start script template with the provided arguments
@@ -164,8 +187,16 @@ func (sb *StartScriptBuilder) Build(
 ) (*StartScriptResult, error) {
 	args := sb.buildArgs(versions, files, rootfsPaths, namespaceID)
 
+	privateDir, ownerMarker, err := preparePrivateVsockDir(files)
+	if err != nil {
+		return nil, err
+	}
+	args.VsockPrivateDir = privateDir
+	args.VsockDir = os.Getenv("SANDBOX_VSOCK_DIR")
+
 	script, err := sb.GenerateScript(args, rootfsPaths)
 	if err != nil {
+		_ = os.RemoveAll(privateDir)
 		return nil, err
 	}
 
@@ -176,6 +207,13 @@ func (sb *StartScriptBuilder) Build(
 		Value:      script,
 		RootfsPath: rootfsPath,
 		KernelPath: kernelPath,
+
+		// VsockPrivateDir/VsockOwnerMarker (empty when the node does not run
+		// the NilOps agent channel): the private bind-mount source and the
+		// generation marker guarding its removal. Stop removes the directory
+		// only while its own marker is still there.
+		VsockPrivateDir:  privateDir,
+		VsockOwnerMarker: ownerMarker,
 	}, nil
 }
 
