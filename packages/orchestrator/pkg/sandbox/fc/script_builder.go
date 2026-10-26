@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"os"
 
-	"path/filepath"
-	txtTemplate "text/template"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/cfg"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/artifact"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
+	"path/filepath"
+	txtTemplate "text/template"
 )
 
 // startScriptArgs represents the arguments for the start script template
@@ -144,15 +144,25 @@ func preparePrivateVsockDir(files *storage.SandboxFiles) (privateDir, ownerMarke
 		return "", "", nil
 	}
 	private := filepath.Join(dir, files.SandboxID)
+	// Remove any directory a PREVIOUS generation left: a same-ID sandbox can
+	// reach here while the old generation's Stop defer is still in its
+	// SIGTERM wait. Removing the directory invalidates that generation's
+	// owner marker, so its cleanup turns into a no-op instead of deleting
+	// THIS generation's live directory (NIL-211 cross-generation race).
+	if err := os.RemoveAll(private); err != nil {
+		return "", "", fmt.Errorf("clearing stale private vsock dir: %w", err)
+	}
 	if err := os.MkdirAll(private, 0o755); err != nil {
 		return "", "", fmt.Errorf("creating private vsock dir: %w", err)
 	}
 	marker, err := os.CreateTemp(private, ".owner-*")
 	if err != nil {
+		_ = os.RemoveAll(private)
 		return "", "", fmt.Errorf("creating vsock dir owner marker: %w", err)
 	}
 	name := marker.Name()
 	if err := marker.Close(); err != nil {
+		_ = os.RemoveAll(private)
 		return "", "", fmt.Errorf("closing vsock dir owner marker: %w", err)
 	}
 	return private, filepath.Base(name), nil
